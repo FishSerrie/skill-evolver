@@ -160,14 +160,18 @@ Run a single standalone evaluation against a skill, producing a quality report. 
 
 ### Improve Mode
 
-Human-directed targeted improvement. Invokes Creator's iteration workflow.
+Human-directed targeted improvement. You (Claude) orchestrate the full cycle.
 
 **Workflow:**
 1. Read the user's improvement instructions
-2. Read the current skill + latest eval results + experiments.jsonl
-3. Apply targeted modifications following Creator's improvement methodology (see Creator SKILL.md "Improving the skill" section)
-4. Run one round of Eval for verification
-5. Output comparison: before vs. after
+2. Read the current skill's SKILL.md + latest eval results + execution traces
+3. **Diagnose**: Read traces from the most recent eval (`evolve/iteration-E{N}/traces/`) to understand WHY specific cases fail
+4. **Plan**: Based on trace evidence, propose specific changes to the user (cite case IDs and trace evidence)
+5. **Apply**: Make the approved changes using the Edit tool (one atomic change at a time)
+6. **Verify**: Run one round of Eval (`python3 scripts/evolve_loop.py <skill> --gt <gt> --run --max-iterations 1`)
+7. **Report**: Show before/after comparison with per-case breakdown
+
+**Key difference from Evolve mode**: The human decides WHAT to change; Improve mode provides diagnostic evidence and executes the change. Evolve mode decides autonomously.
 
 ### Benchmark Mode
 
