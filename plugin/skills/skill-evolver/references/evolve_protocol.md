@@ -1,94 +1,101 @@
-# Evolve 核心协议（8 阶段）
+# Evolve Core Protocol (8 Phases)
 
-本文档定义 Evolve 模式的完整执行协议。每一轮迭代严格按 Phase 0-8 执行。
-
----
-
-## Phase 0: 前置检查
-
-在开始任何迭代前，必须确认：
-
-1. **skill 目录完整**：SKILL.md 存在，目录结构合法
-2. **GT 数据就绪**：存在 assertions、有 dev/holdout split
-3. **git 状态干净**：`git status` 无未提交变更
-4. **workspace 就绪**：复用 Creator 的 `<skill-name>-workspace/`，确认 `evolve/` 子目录存在
-   - 可调用 `python3 scripts/setup_workspace.py <skill-path>`
-5. **生成 evolve_plan.md**：分析 skill 和 GT 数据，生成自适应优化计划（详见 `references/eval_strategy.md`）
-6. **确定当前 mutation layer**：
-   - 由 `evolve_plan.md` 的优化优先级决定起始 layer
-   - 上一层连续 K 轮（K 由 plan 指定，默认 5）无提升 → 升级
-7. **建立 baseline**（仅首次）：
-   - 按 evolve_plan.md 策略跑一轮评测
-   - 记录 baseline 到 `<workspace>/evolve/results.tsv`（iteration 0）
-   - 保存当前 skill 到 `<workspace>/evolve/best_versions/`
+This document defines the complete execution protocol for Evolve mode. Each iteration strictly follows Phases 0 through 8.
 
 ---
 
-## Phase 1: Review（读 Memory，30秒内完成）
+## Phase 0: Pre-flight Checks
 
-每轮迭代开始时，必须读取：
+Before starting any iteration, verify:
+
+1. **Skill directory integrity**: SKILL.md exists, directory structure is valid
+2. **Ground truth ready**: Assertions exist with dev/holdout split
+3. **Clean git state**: `git status` shows no uncommitted changes
+4. **Workspace ready**: Reuse Creator's `<skill-name>-workspace/`, confirm `evolve/` subdirectory exists
+   - Can invoke `python3 scripts/setup_workspace.py <skill-path>`
+5. **Generate evolve_plan.md**: Analyze skill and GT data, produce an adaptive optimization plan (see `references/eval_strategy.md`)
+6. **Determine current mutation layer**:
+   - Starting layer is determined by the optimization priorities in `evolve_plan.md`
+   - K consecutive iterations (K specified in plan, default 5) with no improvement at the current layer triggers promotion
+7. **Establish baseline** (first iteration only):
+   - Run one evaluation round per the evolve_plan.md strategy
+   - Record baseline in `<workspace>/evolve/results.tsv` (iteration 0)
+   - Snapshot the current skill to `<workspace>/evolve/best_versions/`
+
+---
+
+## Phase 1: Review (Read Memory, Complete Within 30 Seconds)
+
+At the start of each iteration, read:
 
 ```bash
-# 1. 最近的实验历史
+# 1. Recent experiment history
 git log --oneline -20
 
-# 2. 结果日志
+# 2. Results log
 tail -20 <workspace>/evolve/results.tsv
 
-# 3. 细粒度记忆（如果存在）
+# 3. Fine-grained memory (if exists)
 tail -10 <workspace>/evolve/experiments.jsonl
+
+# 4. Execution traces from the most recent failed iteration
+ls <workspace>/evolve/iteration-E{N}/traces/
 ```
 
-**从 memory 中识别：**
-- 哪些改动类型成功了（status=keep）→ 可以 exploit
-- 哪些改动类型失败了（status=discard）→ 避免重复
-- 哪些 case 始终失败 → 重点关注
-- 哪些 case 容易被改坏 → 作为 regression 守护
-- 是否 stuck（连续 5+ 轮 discard）→ 需要 radical 策略
+**Extract from memory:**
+- Which mutation types succeeded (status=keep) -- exploit these
+- Which mutation types failed (status=discard) -- avoid repeating
+- Which cases consistently fail -- prioritize these
+- Which cases are fragile (easily regressed) -- use as regression guards
+- Whether stuck (5+ consecutive discards) -- switch to radical strategy
+
+**Read execution traces from `evolve/iteration-E{N}/traces/` for failed cases. Diagnose WHY failures happened, not just THAT they happened.**
 
 ---
 
-## Phase 2: Ideate（决定改什么）
+## Phase 2: Ideate (Decide What to Change)
 
-基于 Phase 1 的分析，按优先级选择改动方向：
+Based on Phase 1 analysis, select a mutation direction by priority:
 
-**优先级排序：**
+**Priority ranking:**
 
-1. **修复 crash**：上轮有 crash 的 case → 优先修复
-2. **exploit 成功模式**：上轮 keep 的改动类型 → 尝试同类变体
-3. **攻克顽固失败 case**：多轮始终失败的 case → 针对性改进
-4. **explore 新方向**：交叉参考 results + git → 找未尝试的方向
-5. **simplify**：删减 skill 中不起作用的部分，保持指标不降
-6. **radical**：当 stuck 时（连续 5+ discard），做大胆尝试
+1. **Fix crashes**: Cases that crashed last iteration -- fix first
+2. **Exploit successful patterns**: Mutation types that were kept last iteration -- try similar variants
+3. **Attack persistent failures**: Cases that fail across multiple iterations -- targeted improvement
+4. **Explore new directions**: Cross-reference results + git log -- find untried approaches
+5. **Simplify**: Remove ineffective parts of the skill while maintaining metrics
+6. **Radical**: When stuck (5+ consecutive discards), attempt bold changes
 
-**输出：**
-- 一句话描述改动意图
-- mutation_type（如 body_rewrite / body_simplify / rule_reorder / template_change）
-- 改动范围（哪些文件）
+**MANDATORY: Before proposing any change, cite specific trace evidence. State a counterfactual diagnosis: "Case X failed because of Y. If we change Z, the output would instead do W."**
 
-**Anti-patterns（禁止）：**
-- 不允许重复已被 discard 的完全相同的改动（先查 git log）
-- 不允许一轮做多个不相关改动（一句话测试：需要用"and"描述 → 说明是两个改动）
-- 不允许跨 mutation layer 改动
-- **不允许"发现了问题但不修"** — 只要识别出是问题，就应该作为一次迭代去修复，不区分大小。迭代的意义就是持续改进，跳过"小问题"等于放弃了改进机会
+**Output:**
+- One-sentence description of the intended change
+- mutation_type (e.g., body_rewrite / body_simplify / rule_reorder / template_change)
+- Scope of change (which files)
+
+**Anti-patterns (forbidden):**
+- Do not repeat a change that was already discarded with identical content (check git log first)
+- Do not bundle multiple unrelated changes in one iteration (the one-sentence test: if you need "and" to describe it, it is two changes)
+- Do not make cross-layer changes
+- **Do not identify a problem without fixing it** -- if it is a problem, it warrants an iteration. The purpose of iteration is continuous improvement; skipping "small issues" forfeits improvement opportunities
 
 ---
 
-## Phase 3: Modify（一个原子改动）
+## Phase 3: Modify (One Atomic Change)
 
-执行 Phase 2 确定的改动。
+Execute the change determined in Phase 2.
 
-**规则：**
-- 只改当前 layer 的文件
-- 改动必须可用一句话解释
-- 改完后自检：
-  - `git diff --stat` 检查影响范围
-  - 超过 5 个文件 → 大概率不是原子改动，需要拆分
+**Rules:**
+- Only modify files in the current layer
+- The change must be explainable in one sentence
+- Post-modification self-check:
+  - `git diff --stat` to inspect scope
+  - More than 5 files changed -- likely not atomic, split it
 
-**改动技巧：**
-- 优先解释 why 而不是硬写 MUST/NEVER
-- 优先改结构/流程，而不是堆更多文字
-- 如果发现多个 case 都独立写了相同的 helper 逻辑 → 提取成 script
+**Modification principles:**
+- Prefer explaining "why" over hard-coding MUST/NEVER
+- Prefer structural/flow changes over adding more text
+- If multiple cases independently duplicate the same helper logic, extract it into a script
 
 ---
 
@@ -96,68 +103,100 @@ tail -10 <workspace>/evolve/experiments.jsonl
 
 ```bash
 git add <changed-files>
-git commit -m "experiment(<layer>): <一句话描述>"
+git commit -m "experiment(<layer>): <one-sentence description>"
 ```
 
-例如：
+Examples:
 ```
-experiment(body): 增加跨分类检索时的路径合并规则
-experiment(body): 简化 Stage 2 的节点选择提示
-experiment(description): 增加对打卡异常场景的触发覆盖
+experiment(body): add path-merging rules for cross-category retrieval
+experiment(body): simplify node selection prompt in Stage 2
+experiment(description): expand trigger coverage for edge-case scenarios
 ```
 
-**非 git 环境降级处理：**
+**Git-first strategy (four-step decision tree):**
 
-如果 skill 目录不在 git 管理下，跳过 git 操作，改为：
-1. 将修改前的文件内容备份到 `<workspace>/evolve/best_versions/pre-iteration-N/`
-2. 在 experiments.jsonl 中记录改动的 diff（关键行变更）
-3. 如果 Gate 判定为 discard，手动用备份恢复文件
+Check in order; use git whenever possible, degrade only as a last resort:
+
+**Step 1: Check whether the directory is under git control**
+```bash
+git -C <skill-path> rev-parse --is-inside-work-tree 2>/dev/null
+```
+- [OK] Already under git control -- proceed directly to Phase 1
+
+**Step 2: Git installed but not initialized -- initialize immediately**
+```bash
+git --version 2>/dev/null  # check if git is installed
+```
+- [OK] Git is installed, just not initialized -- **run git init, do not skip, do not degrade**:
+```bash
+cd <skill-path>
+git init
+git add .
+git commit -m "chore: init git for evolve tracking"
+```
+
+**Step 3: Git not installed -- prompt installation**
+- Prompt the user to install, wait, do not auto-degrade:
+```
+[WARN] Git not detected. Please install and retry:
+  macOS:  brew install git  or  xcode-select --install
+  Ubuntu: sudo apt-get install git
+  CentOS: sudo yum install git
+  Windows: https://git-scm.com/download/win
+```
+
+**Step 4: Git cannot be installed (no network / restricted environment) -- degrade**
+- Enable folder-based backup only after confirming git is unavailable:
+  1. Back up pre-modification files to `<workspace>/evolve/best_versions/pre-iteration-N/`
+  2. Record key line changes in experiments.jsonl
+  3. When gate decision is discard, manually restore from backup
+- **Tag results.tsv rows with `[no-git]` to remind the user to re-run with git later**
 
 
 
-## Phase 5: Verify（按 evolve_plan.md 评测策略执行）
+## Phase 5: Verify (Execute Per evolve_plan.md Evaluation Strategy)
 
-评测策略不写死，由 `<workspace>/evolve/evolve_plan.md` 定义。以下是三类可配置评测：
+The evaluation strategy is not hard-coded; it is defined in `<workspace>/evolve/evolve_plan.md`. Three configurable evaluation tiers:
 
-### Quick Gate（每轮必跑，秒级）
+### Quick Gate (every iteration, seconds)
 
-可调用 `python3 scripts/run_l1_gate.py <skill-path> [--gt <gt-json>]`：
-- skill 文件语法正确（YAML frontmatter 合法）
-- 不包含明显的破坏性变更
-- trigger 快速抽样（样本数由 evolve_plan 指定）
-- hard assertions 快速检查（核心 GT case 抽样）
+Can invoke `python3 scripts/run_l1_gate.py <skill-path> [--gt <gt-json>]`:
+- Skill file syntax is valid (YAML frontmatter is legal)
+- No obvious destructive changes
+- Trigger quick-sample (sample size specified by evolve_plan)
+- Hard assertion spot-check (sampled core GT cases)
 
-**Quick Gate 失败 → 直接跳到 Phase 6 discard，不跑 Dev Eval。**
+**Quick Gate failure -- skip directly to Phase 6 discard; do not run Dev Eval.**
 
-### Dev Eval（频率由 evolve_plan 定义，分钟级）
+### Dev Eval (frequency defined by evolve_plan, minutes)
 
-由 Claude 编排（spawn subagent + grader 打分），`scripts/run_l2_eval.py` 提供辅助函数：
+Orchestrated by Claude (spawn subagent + grader scoring), with `scripts/run_l2_eval.py` providing helper functions:
 
-1. **执行**：spawn subagent，加载 skill，运行每个 prompt
-2. **打分**：读取 `agents/grader_agent.md`（或 Creator 的完整版），按 assertions 逐条判定
-3. **采集 timing**：记录 tokens 和 duration
-4. **聚合**：`run_l2_eval.aggregate_grades()` → benchmark.json
-5. **重点关注**：evolve_plan.md 中标记的高优先级 assertion 类型
+1. **Execute**: Spawn subagent, load skill, run each prompt
+2. **Grade**: Read `agents/grader_agent.md` (or Creator's full version), judge each assertion
+3. **Collect timing**: Record tokens and duration
+4. **Aggregate**: `run_l2_eval.aggregate_grades()` -- produces benchmark.json
+5. **Focus areas**: High-priority assertion types marked in evolve_plan.md
 
-### Strict Eval（触发条件由 evolve_plan 定义，十分钟级）
+### Strict Eval (trigger conditions defined by evolve_plan, ~10 minutes)
 
-触发条件（由 evolve_plan.md 配置）：
-- 每 N 轮自动触发
-- 或 Dev Eval pass_rate 超过阈值时
-- 或准备做 layer promotion 前
+Trigger conditions (configured in evolve_plan.md):
+- Auto-trigger every N iterations
+- Or when Dev Eval pass_rate exceeds a threshold
+- Or before a layer promotion
 
-内容：
-- 跑 holdout set（split="holdout"）
-- 跑 regression set（split="regression"）
-- 可选：blind A/B comparison（读取 `agents/comparator_agent.md`）
+Content:
+- Run holdout set (split="holdout")
+- Run regression set (split="regression")
+- Optional: blind A/B comparison (read `agents/comparator_agent.md`)
 
 ---
 
-## Phase 6: Gate（多门控判定）
+## Phase 6: Gate (Multi-Gate Decision)
 
-读取 `references/gate_rules.md` 获取完整门控逻辑。
+Read `references/gate_rules.md` for complete gate logic.
 
-**简化版判定：**
+**Simplified decision:**
 
 ```
 IF crash or timeout → REVERT
@@ -171,21 +210,21 @@ IF L2 pass_rate > baseline.pass_rate + min_delta
 ELSE → DISCARD
 ```
 
-**Keep 动作：**
-- 更新 baseline 为当前版本
-- 保存 skill 快照到 best_versions/
+**Keep action:**
+- Update baseline to the current version
+- Snapshot skill to best_versions/
 
-**Discard 动作：**
+**Discard action:**
 ```bash
 git revert HEAD --no-edit
 ```
-注意：用 `git revert` 而不是 `git reset`，保留失败实验的历史。
+Note: Use `git revert`, not `git reset`, to preserve the history of failed experiments.
 
-**Revert 动作（crash/严重退化）：**
+**Revert action (crash / severe regression):**
 ```bash
 git revert HEAD --no-edit
 ```
-并在 experiments.jsonl 中记录 crash 原因。
+Record crash reason in experiments.jsonl.
 
 ---
 
@@ -200,10 +239,10 @@ echo -e "${iteration}\t${commit}\t${metric}\t${delta}\t${trigger_f1}\t${tokens}\
 ### experiments.jsonl
 
 ```bash
-echo '{"iteration":N,"mutation_type":"...","mutation_layer":"...","intent":"...","cases_improved":[...],"cases_degraded":[...],"trigger_delta":0.0,"token_delta":0,"status":"keep/discard"}' >> <workspace>/evolve/experiments.jsonl
+echo '{"iteration":N,"mutation_type":"...","mutation_layer":"...","intent":"...","diagnosis":"...","cases_improved":[...],"cases_degraded":[...],"trigger_delta":0.0,"token_delta":0,"status":"keep/discard"}' >> <workspace>/evolve/experiments.jsonl
 ```
 
-### Progress Summary（每 10 轮）
+### Progress Summary (every 10 iterations)
 
 ```
 === Skill Evolve Progress (iteration 20) ===
@@ -217,62 +256,62 @@ Last 5: keep, discard, discard, keep, keep
 
 ## Phase 8: Loop
 
-- **bounded**：到达 max_iterations → 输出 summary + best skill
-- **unbounded**：继续 Phase 1
-- **layer promotion**：当前 layer 连续 K 轮（默认 5）无 keep → 升级到下一 layer
-- **stuck detection**：连续 5 轮 discard → 切换到 radical 策略（Priority 6）
-- **exhaustion**：3 个 layer 都尝试过且无提升 → 输出最终报告并结束
+- **bounded**: Reached max_iterations -- output summary + best skill
+- **unbounded**: Continue to Phase 1
+- **layer promotion**: Current layer has K consecutive iterations with no keep -- promote to next layer
+- **stuck detection**: 5 consecutive discards -- switch to radical strategy (Priority 6)
+- **exhaustion**: All 3 layers attempted with no improvement -- output final report and terminate
 
 ---
 
-## 终止时输出
+## Terminal Output
 
-Evolve 结束时，必须输出：
+When Evolve terminates, output:
 
-1. **best_skill/**：当前最优版本的完整 skill 目录
-2. **results.tsv**：完整实验日志
-3. **experiments.jsonl**：细粒度记忆
-4. **summary.md**：
-   - baseline → best 的提升幅度
-   - 有效改动列表
-   - 无效改动列表
-   - 各 layer 的 keep/discard 比例
-   - 建议下一步优化方向
+1. **best_skill/**: Complete skill directory of the current best version
+2. **results.tsv**: Full experiment log
+3. **experiments.jsonl**: Fine-grained memory
+4. **summary.md**:
+   - Improvement from baseline to best
+   - List of effective changes
+   - List of ineffective changes
+   - Keep/discard ratio per layer
+   - Recommended next optimization directions
 
 ---
 
-## 中间产物清理
+## Artifact Cleanup
 
-Evolve 过程中会产生大量中间产物（git commits、best_versions 快照、evaluation 产物）。终止后应清理：
+Evolve produces many intermediate artifacts (git commits, best_versions snapshots, evaluation outputs). Clean up after termination:
 
-### 自动清理规则
+### Automatic Cleanup Rules
 
-1. **best_versions/**：只保留最近 3 个快照，更早的自动删除
-2. **iteration-EN/ 评测产物**：只保留最近 5 轮和所有 keep 轮的产物，其余删除
-3. **git history**：**不自动清理**（git revert 已保留完整历史，可手动 squash）
+1. **best_versions/**: Retain only the 3 most recent snapshots; delete older ones
+2. **iteration-EN/ evaluation artifacts**: Retain only the 5 most recent iterations and all kept iterations; delete the rest
+3. **git history**: **Never auto-clean** (git revert preserves full history; manual squash is optional)
 
-### 手动清理命令
+### Manual Cleanup Commands
 
 ```bash
-# 清理评测产物（保留最近 5 轮 + 所有 keep 轮）
+# Clean evaluation artifacts (keep last 5 iterations + all kept iterations)
 python3 scripts/evolve_loop.py <skill-path> --cleanup
 
-# 清理 best_versions（只保留最新 3 个）
+# Clean best_versions (keep only the 3 most recent)
 python3 scripts/evolve_loop.py <skill-path> --cleanup-versions
 
-# 完全清理（删除整个 evolve/ 子目录，保留 Creator 的数据）
+# Full cleanup (delete entire evolve/ subdirectory, preserve Creator data)
 rm -rf <workspace>/evolve/
 ```
 
-### Git 清理建议
+### Git Cleanup Recommendations
 
-Evolve 完成后，如果要清理 git 历史中的 experiment 和 revert commits：
+After Evolve completes, to clean experiment and revert commits from git history:
 ```bash
-# 找到 evolve 开始前的 commit
+# Find the commit before evolve started
 git log --oneline | grep -v "experiment\|Revert" | head -1
 
-# 交互式 rebase 到那个点（可选，非必须）
+# Interactive rebase to that point (optional, not required)
 # git rebase -i <commit-before-evolve>
 ```
 
-**注意：不建议在 evolve 进行中清理 git。中间产物是 memory 的一部分。**
+**Note: Do not clean git during an active evolve run. Intermediate artifacts are part of the memory system.**
