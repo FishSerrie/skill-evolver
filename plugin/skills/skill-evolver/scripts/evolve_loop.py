@@ -38,9 +38,13 @@ def phase_0_setup(skill_path: Path, gt_path: Path,
                   workspace: Path | None = None) -> dict:
     """Create workspace, initialize memory, generate evolve_plan template.
 
-    Returns: {"workspace", "evolve_dir", "plan_path", "baseline_needed"}
+    On first use, auto-detects creator tools (skill-creator, claw-creator, etc.)
+    and configures the evaluation pipeline accordingly.
+
+    Returns: {"workspace", "evolve_dir", "plan_path", "baseline_needed", "creator_config"}
     """
     from setup_workspace import setup_workspace  # noqa: sibling import
+    from common import setup_creator_config
 
     ws = workspace or find_workspace(skill_path)
     result = setup_workspace(skill_path, ws)
@@ -48,6 +52,9 @@ def phase_0_setup(skill_path: Path, gt_path: Path,
     evolve_dir = Path(result["evolve_dir"])
     plan_path = evolve_dir / "evolve_plan.md"
     results_tsv = evolve_dir / "results.tsv"
+
+    # First-use creator detection and configuration
+    creator_config = setup_creator_config(ws, skill_path)
 
     # Check if baseline already exists
     baseline_needed = True
@@ -63,6 +70,7 @@ def phase_0_setup(skill_path: Path, gt_path: Path,
         "baseline_needed": baseline_needed,
         "gt_path": str(gt_path),
         "skill_path": str(skill_path),
+        "creator_config": creator_config,
     }
 
 
@@ -117,6 +125,25 @@ def phase_1_review(workspace: Path) -> dict:
     except (subprocess.TimeoutExpired, OSError):
         pass
 
+    # Meta-Harness: read execution traces from recent failed iterations
+    # Enables active diagnosis in Phase 2 (grep traces, not guess)
+    recent_traces = {}
+    if rows:
+        # Find the most recent iteration with traces
+        for row in reversed(rows):
+            iter_num = row.get("iteration", 0)
+            trace_dir = evolve_dir / f"iteration-E{iter_num}" / "traces"
+            if trace_dir.exists():
+                for trace_file in sorted(trace_dir.glob("case_*.md"))[:10]:
+                    recent_traces[trace_file.stem] = trace_file.read_text()[:2000]
+                break  # only the most recent iteration's traces
+
+    # Collect past diagnoses (counterfactual insights from prior iterations)
+    past_diagnoses = [
+        e.get("diagnosis") for e in recent_experiments
+        if e.get("diagnosis")
+    ][-5:]
+
     return {
         "iterations": summary["total_iterations"],
         "keeps": summary["keep_count"],
@@ -130,6 +157,8 @@ def phase_1_review(workspace: Path) -> dict:
         "recent_failures": recent_failures,
         "successful_patterns": successful_patterns,
         "git_log": git_log,
+        "recent_traces": recent_traces,
+        "past_diagnoses": past_diagnoses,
     }
 
 
@@ -152,7 +181,7 @@ def phase_2_prepare_ideation(workspace: Path, review: dict,
     # Priority suggestions based on review
     suggestions = []
     if review.get("stuck"):
-        suggestions.append("STUCK detected — try radical strategy (大胆尝试)")
+        suggestions.append("STUCK detected — try radical strategy (different layer or approach)")
     if review.get("recent_failures"):
         last_failure = review["recent_failures"][-1]
         suggestions.append(f"Last failure: {last_failure.get('intent', '?')} — avoid repeating")
@@ -319,8 +348,13 @@ def phase_7_log(workspace: Path, iteration: int, commit: str,
                 metric: float, delta: float, trigger_f1: float,
                 tokens: int, guard: str, status: str,
                 layer: str, description: str,
-                experiment: dict | None = None) -> None:
-    """Append to results.tsv and experiments.jsonl."""
+                experiment: dict | None = None,
+                traces: dict | None = None) -> None:
+    """Append to results.tsv, experiments.jsonl, and write execution traces.
+
+    Traces (Meta-Harness pattern): full evaluation output per test case,
+    stored as individual files for active diagnosis in Phase 1/2.
+    """
     evolve_dir = workspace / "evolve"
 
     # results.tsv
@@ -336,6 +370,14 @@ def phase_7_log(workspace: Path, iteration: int, commit: str,
         jsonl_path = evolve_dir / "experiments.jsonl"
         with open(jsonl_path, "a") as f:
             f.write(json.dumps(experiment, ensure_ascii=False) + "\n")
+
+    # Execution traces (Meta-Harness: full output per case for diagnosis)
+    if traces:
+        trace_dir = evolve_dir / f"iteration-E{iteration}" / "traces"
+        trace_dir.mkdir(parents=True, exist_ok=True)
+        for case_id, trace_content in traces.items():
+            trace_file = trace_dir / f"case_{case_id}.md"
+            trace_file.write_text(str(trace_content))
 
 
 # ─────────────────────────────────────────────
@@ -564,6 +606,20 @@ def phase_2_3_ideate_and_modify(skill_path: Path, workspace: Path,
     recent_failures = json.dumps(review.get("recent_failures", []), ensure_ascii=False)
     successful = json.dumps(review.get("successful_patterns", []), ensure_ascii=False)
 
+    # Meta-Harness: include trace evidence for active diagnosis
+    trace_context = ""
+    recent_traces = review.get("recent_traces", {})
+    if recent_traces:
+        trace_lines = []
+        for name, content in list(recent_traces.items())[:5]:
+            trace_lines.append(f"--- {name} ---\n{content}")
+        trace_context = "\n".join(trace_lines)
+
+    diagnosis_context = ""
+    past_diagnoses = review.get("past_diagnoses", [])
+    if past_diagnoses:
+        diagnosis_context = "\n".join(f"- {d}" for d in past_diagnoses)
+
     prompt = f"""You are optimizing a skill's SKILL.md. Make ONE atomic improvement.
 
 Current SKILL.md ({len(skill_content)} chars) is at: {skill_path / 'SKILL.md'}
@@ -574,17 +630,24 @@ Successful patterns: {successful}
 Current best metric: {review.get('current_best_metric', 'unknown')}
 Is stuck: {review.get('stuck', False)}
 
-Read the SKILL.md at {skill_path / 'SKILL.md'}, then:
-1. Identify ONE specific weakness or area for improvement
-2. Make ONE atomic change using the Edit tool
-3. The change must be explainable in one sentence
-4. Do NOT add unnecessary MUST/NEVER — explain WHY instead
+{"## Execution Traces (from most recent eval)" + chr(10) + trace_context if trace_context else ""}
+
+{"## Past Diagnoses (insights from prior iterations)" + chr(10) + diagnosis_context if diagnosis_context else ""}
+
+MANDATORY PROTOCOL (Meta-Harness active diagnosis):
+1. If traces are provided, READ THEM FIRST — identify the specific assertion
+   that failed and WHY it failed based on the trace evidence
+2. State your diagnosis: "Case X failed because [specific reason from trace]"
+3. Then propose ONE atomic change that directly addresses the diagnosed cause
+4. Do NOT guess — if no trace evidence points to a clear cause, say so
+
+Read the SKILL.md at {skill_path / 'SKILL.md'}, then make your change.
 
 After making the change, output EXACTLY this JSON on the last line:
-{{"changed": true, "description": "one sentence describing what you changed", "mutation_type": "body_rewrite"}}
+{{"changed": true, "description": "one sentence describing what you changed", "mutation_type": "body_rewrite", "diagnosis": "Case X failed because Y, so I changed Z"}}
 
 If you find nothing to improve, output:
-{{"changed": false, "description": "no improvement found", "mutation_type": "none"}}
+{{"changed": false, "description": "no improvement found", "mutation_type": "none", "diagnosis": ""}}
 """
 
     response = _call_claude(prompt, model=model, timeout=180)
@@ -778,13 +841,17 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
         delta = new_rate - best_rate
         log(f"  L2: {new_eval.get('total_passed', '?')}/{new_eval.get('total_assertions', '?')} = {new_rate:.0%} (delta: {delta:+.0%})")
 
-        # Phase 6: Gate
+        # Phase 6: Gate (with real metrics from evaluator)
         log("Phase 6: Gate")
         gate = phase_6_gate_decision(
             {"pass_rate": new_rate, "l1_pass": True, "trigger_f1": 1.0,
-             "tokens_mean": 0, "duration_mean": 0, "regression_pass": 1.0},
+             "tokens_mean": new_eval.get("tokens", 0),
+             "duration_mean": new_eval.get("duration", 0.0),
+             "regression_pass": 1.0},
             {"pass_rate": best_rate, "trigger_f1": 1.0,
-             "tokens_mean": 0, "duration_mean": 0, "regression_pass": 1.0},
+             "tokens_mean": baseline.get("tokens", 0),
+             "duration_mean": baseline.get("duration", 0.0),
+             "regression_pass": 1.0},
             {"min_delta": 0.01, "noise_threshold": 0.005}
         )
         decision = gate["decision"]
@@ -798,12 +865,12 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
             git_revert_last(skill_path)
             log(f"  {decision.upper()} — reverted")
 
-        # Phase 7: Log
+        # Phase 7: Log (with traces for Meta-Harness active diagnosis)
         elapsed = time.time() - t0
         phase_7_log(workspace, iteration, commit["commit_hash"],
                     new_rate * 100, delta * 100,
-                    1.0, 0, "pass", decision, current_layer,
-                    result_23["description"],
+                    1.0, new_eval.get("tokens", 0), "pass", decision,
+                    current_layer, result_23["description"],
                     experiment={
                         "iteration": iteration,
                         "mutation_type": result_23["mutation_type"],
@@ -811,7 +878,11 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
                         "intent": result_23["description"],
                         "status": decision,
                         "elapsed_seconds": round(elapsed, 1),
-                    })
+                        "tokens": new_eval.get("tokens", 0),
+                        "duration": new_eval.get("duration", 0.0),
+                        "diagnosis": result_23.get("diagnosis", ""),
+                    },
+                    traces=new_eval.get("traces"))
         log(f"  Logged ({elapsed:.1f}s)")
 
         # Phase 8: Loop control
@@ -1000,7 +1071,23 @@ def main():
         return
 
     if not args.gt:
-        parser.error("--gt is required")
+        # Auto-discover GT data
+        candidates = [
+            ws / "evals" / "evals.json",
+            args.skill_path / "evals.json",
+            args.skill_path.parent / "evals.json",
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                args.gt = candidate
+                print(f"Auto-discovered GT data: {candidate}", file=sys.stderr)
+                break
+        if not args.gt:
+            print("Error: No GT data found. Provide --gt or place evals.json in:",
+                  file=sys.stderr)
+            for c in candidates:
+                print(f"  {c}", file=sys.stderr)
+            sys.exit(1)
 
     # Build evaluator from CLI args or evolve_plan.md
     eval_config = {}
@@ -1036,4 +1123,20 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nInterrupted by user.", file=sys.stderr)
+        sys.exit(130)
+    except FileNotFoundError as e:
+        print(f"Error: File not found — {e}", file=sys.stderr)
+        sys.exit(1)
+    except json.JSONDecodeError as e:
+        print(f"Error: Invalid JSON in GT data — {e}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        print("Run with PYTHONTRACEBACK=1 for full traceback.", file=sys.stderr)
+        if os.environ.get("PYTHONTRACEBACK"):
+            raise
+        sys.exit(1)

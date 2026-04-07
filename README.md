@@ -42,9 +42,31 @@ Built on top of [skill-creator](https://github.com/anthropics/claude-plugins-off
 
 **Evolver calls Creator, never copies it.** When Creator gets updated, Evolver benefits automatically.
 
+### Universal Architecture
+
+Skill Evolver is a **universal optimization shell** — it is not hard-coupled to any specific creator or LLM provider. The pluggable evaluator system supports:
+
+| Evaluator | Use Case |
+|---|---|
+| `local` | Built-in assertion matching (no LLM needed for basic types) |
+| `creator` | Enhances local eval with skill-creator's trigger testing |
+| `script` | Your own evaluation script (any language, any logic) |
+| `pytest` | Standard test framework integration |
+
+If you use a different creator (e.g., `claw-creator`), just point the evaluator to your own script:
+```bash
+python3 scripts/evolve_loop.py ./my-skill/ --gt evals.json --run --evaluator script --evaluator-script ./my_eval.py
+```
+
+### Evaluation Philosophy
+
+**LLM does binary classification; programs do scoring.** Deterministic assertions (contains, regex, json_schema) use zero LLM calls. Semantic assertions (fact_coverage, path_hit) use atomic YES/NO LLM calls. Programs aggregate all results. Same classification always produces the same score.
+
 ---
 
 ## Quick Start
+
+> **Try the 5-minute demo:** See [examples/README.md](examples/README.md) for a self-contained walkthrough.
 
 ### 1. Auto-evolve an existing skill (core feature)
 
@@ -214,7 +236,10 @@ your-project/
         ├── iteration-E1/           # Evolve eval artifacts (E-prefix)
         │   ├── grading.json
         │   ├── benchmark.json
-        │   └── timing.json
+        │   ├── timing.json
+        │   └── traces/             # Full execution traces (Meta-Harness)
+        │       ├── case_1.md
+        │       └── case_2.md
         └── summary.md              # Final evolution report
 ```
 
@@ -224,7 +249,21 @@ your-project/
 
 ### Prerequisites
 
-- [Claude Code](https://claude.com/claude-code) CLI installed
+- Python 3.10+
+- Git
+- [Claude Code](https://claude.com/claude-code) CLI installed (for LLM-based semantic assertions and the evolve proposer)
+
+### Optional: skill-creator
+
+skill-creator enhances evaluation with trigger testing and blind A/B comparison. The core evolve loop works without it (using `--evaluator local`).
+
+Install from: [claude-plugins-official](https://github.com/anthropics/claude-plugins-official)
+
+Without Creator, you can still use:
+- All 6 program-only assertion types (contains, regex, json_schema, script_check, etc.)
+- LLM binary assertions (path_hit, fact_coverage) via BinaryLLMJudge
+- The full 8-phase evolve loop
+- Script and pytest evaluators for custom evaluation logic
 - [skill-creator](https://github.com/anthropics/claude-plugins-official/tree/main/plugins/skill-creator) plugin installed (comes with Claude Code by default)
 - Python 3.10+
 - Git (recommended for version tracking)
