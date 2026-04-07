@@ -114,13 +114,13 @@ experiment(description): 增加对打卡异常场景的触发覆盖
 ```bash
 git -C <skill-path> rev-parse --is-inside-work-tree 2>/dev/null
 ```
-- ✅ 已在 git 管理下 → 直接进入 Phase 1，无需任何操作
+- [OK] 已在 git 管理下 → 直接进入 Phase 1，无需任何操作
 
 **Step 2：有 git 但未 init → 立即 init**
 ```bash
 git --version 2>/dev/null  # 检查 git 是否安装
 ```
-- ✅ git 已安装，只是没有 init → **直接 git init，不跳过，不降级**：
+- [OK] git 已安装，只是没有 init → **直接 git init，不跳过，不降级**：
 ```bash
 cd <skill-path>
 git init
@@ -131,7 +131,7 @@ git commit -m "chore: init git for evolve tracking"
 **Step 3：git 未安装 → 尝试安装**
 - 提示用户安装，同时继续等待，不自动降级：
 ```
-⚠️ 未检测到 git。请安装后重试：
+[WARN] 未检测到 git。请安装后重试：
   macOS:  brew install git  或  xcode-select --install
   Ubuntu: sudo apt-get install git
   CentOS: sudo yum install git

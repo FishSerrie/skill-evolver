@@ -8,8 +8,8 @@
 | **Eval** | spawn subagent 跑 eval，人工 review viewer | 三级评测（快速门卫/开发集/严格评测），更精细 | **增强** |
 | **Improve** | 人看 feedback → 手动改 → 再跑 eval | Improve 模式 = 人主导定向改进 | **调用 Creator** |
 | **Benchmark** | blind A/B comparison + analyzer | Benchmark 模式 + comparator agent | **调用 Creator** |
-| **Evolve** | ❌ 没有。靠人循环 | **核心价值**。AutoResearch 式自动循环 | **全新** |
-| **门控** | ❌ 没有。人决定是否满意 | 多门控 AND 逻辑（质量/触发/成本/时延/回归） | **全新** |
+| **Evolve** | 无。靠人循环 | **核心价值**。AutoResearch 式自动循环 | **全新** |
+| **门控** | 无。人决定是否满意 | 多门控 AND 逻辑（质量/触发/成本/时延/回归） | **全新** |
 | **Memory** | 只有 workspace 目录 | results.tsv + experiments.jsonl + git + best_versions | **全新** |
 | **Description 优化** | `run_loop.py` 做触发优化 | Layer 1 description 优化直接调用 creator 的 run_loop | **调用 Creator** |
 
