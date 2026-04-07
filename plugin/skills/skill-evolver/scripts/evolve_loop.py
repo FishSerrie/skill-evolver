@@ -173,7 +173,7 @@ def phase_2_prepare_ideation(workspace: Path, review: dict,
     # Priority suggestions based on review
     suggestions = []
     if review.get("stuck"):
-        suggestions.append("STUCK detected — try radical strategy (大胆尝试)")
+        suggestions.append("STUCK detected — try radical strategy (different layer or approach)")
     if review.get("recent_failures"):
         last_failure = review["recent_failures"][-1]
         suggestions.append(f"Last failure: {last_failure.get('intent', '?')} — avoid repeating")

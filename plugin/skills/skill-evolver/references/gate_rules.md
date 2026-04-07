@@ -1,29 +1,29 @@
-# 多门控规则
+# Multi-Gate Decision Rules
 
-## 核心原则
+## Core Principle
 
-**所有 Keep 条件必须同时满足（AND 逻辑）。任一 Discard 条件触发即 Discard。**
+**All Keep conditions must be satisfied simultaneously (AND logic). Any single Discard condition triggers Discard.**
 
 ---
 
-## 门控判定伪代码
+## Gate Decision Pseudocode
 
 ```python
 def gate_decision(current, baseline, policy):
     """
-    current: 本轮评测结果
-    baseline: 当前 best version 的评测结果
-    policy: 门控阈值配置
+    current:  evaluation results for this iteration
+    baseline: evaluation results for the current best version
+    policy:   gate threshold configuration
     """
-    # 硬性失败：crash / timeout
+    # Hard failure: crash / timeout
     if current.status in ("crash", "timeout"):
         return "revert"
 
-    # L1 快速门卫未通过
+    # L1 quick gate failed
     if not current.l1_pass:
         return "discard"
 
-    # 多门控 AND 逻辑
+    # Multi-gate AND logic
     quality_ok = (
         current.dev_pass_rate
         >= baseline.dev_pass_rate + policy.min_delta
@@ -48,7 +48,7 @@ def gate_decision(current, baseline, policy):
     if quality_ok and trigger_ok and cost_ok and latency_ok and regression_ok:
         return "keep"
 
-    # 变化不显著（噪声范围内）→ 不冒险
+    # Change is within noise range — do not risk it
     if abs(current.dev_pass_rate - baseline.dev_pass_rate) < policy.noise_threshold:
         return "discard"
 
@@ -57,46 +57,83 @@ def gate_decision(current, baseline, policy):
 
 ---
 
-## 默认阈值配置
+## Default Threshold Configuration
 
-| 参数 | 默认值 | 说明 |
+| Parameter | Default | Description |
 |---|---|---|
-| `min_delta` | 0.02 (2%) | 质量最小提升幅度 |
-| `trigger_tolerance` | 0.05 (5%) | trigger 允许的最大退化 |
-| `max_token_increase` | 0.20 (20%) | token 允许的最大膨胀 |
-| `max_latency_increase` | 0.20 (20%) | 时延允许的最大膨胀 |
-| `regression_tolerance` | 0.05 (5%) | regression 允许的最大退化 |
-| `noise_threshold` | 0.01 (1%) | 低于此变化量视为噪声 |
+| `min_delta` | 0.02 (2%) | Minimum quality improvement required |
+| `trigger_tolerance` | 0.05 (5%) | Maximum allowed trigger regression |
+| `max_token_increase` | 0.20 (20%) | Maximum allowed token inflation |
+| `max_latency_increase` | 0.20 (20%) | Maximum allowed latency inflation |
+| `regression_tolerance` | 0.05 (5%) | Maximum allowed regression degradation |
+| `noise_threshold` | 0.01 (1%) | Changes below this magnitude are treated as noise |
 
-这些阈值可由用户在 evolve 配置中覆盖。
+These thresholds can be overridden by the user in the evolve configuration.
 
 ---
 
-## 门控结果汇总表
+## Gate Outcome Summary
 
-| 条件 | Keep 要求 | Discard 触发 | Revert 触发 |
+| Dimension | Keep Requirement | Discard Trigger | Revert Trigger |
 |---|---|---|---|
-| 质量 | dev_pass_rate ≥ baseline + min_delta | 无提升或下降 | 大幅退化 |
-| 触发 | trigger_f1 ≥ baseline × 0.95 | 明显恶化 | — |
-| 成本 | tokens ≤ baseline × 1.2 | 超阈值 | — |
-| 时延 | duration ≤ baseline × 1.2 | 超阈值 | — |
-| 回归 | regression_pass ≥ baseline × 0.95 | 明显退化 | — |
-| 运行 | — | — | crash / timeout |
+| Quality | dev_pass_rate >= baseline + min_delta | No improvement or decline | Severe regression |
+| Trigger | trigger_f1 >= baseline x 0.95 | Significant degradation | -- |
+| Cost | tokens <= baseline x 1.2 | Exceeds threshold | -- |
+| Latency | duration <= baseline x 1.2 | Exceeds threshold | -- |
+| Regression | regression_pass >= baseline x 0.95 | Significant degradation | -- |
+| Runtime | -- | -- | crash / timeout |
 
 ---
 
-## L3 门控（补充）
+## Strict Eval Gate (Supplementary)
 
-当触发 L3 严格评测时，额外检查：
+When Strict Eval is triggered, apply additional checks:
 
 ```python
-# holdout 必须和 dev 方向一致
+# Holdout must be directionally consistent with dev
 holdout_consistent = (
     current.holdout_pass_rate
     >= baseline.holdout_pass_rate - policy.noise_threshold
 )
 
-# 如果 dev 涨了但 holdout 跌了 → 过拟合信号
+# Dev improved but holdout declined → overfitting signal
 if not holdout_consistent:
-    return "discard"  # 疑似过拟合
+    return "discard"  # suspected overfitting
 ```
+
+---
+
+## Anti-Goodhart Protocol
+
+Metric optimization can diverge from actual skill quality. The following safeguards prevent Goodhart's Law from corrupting the evolution process.
+
+### Negative Assertions in Ground Truth
+
+GT should include `not_contains` assertions for critical requirements. Examples:
+- The output must NOT hallucinate a specific wrong answer
+- The output must NOT include raw template variables
+- The output must NOT omit required disclaimers
+
+Negative assertions catch cases where the metric improves while the output degrades in ways the positive assertions do not cover.
+
+### Structural Integrity Checks
+
+After every mutation, verify that structural elements remain intact:
+- **Section headers**: No required section headers disappeared from the skill body
+- **Scripts**: No helper scripts were deleted (only modified or replaced)
+- **References**: No reference files were removed without explicit intent
+
+A mutation that passes the quality gate but silently drops structural components is a false positive.
+
+### Holdout Set Protocol
+
+- The holdout set **MUST** be evaluated before declaring convergence
+- A skill that improves on dev but regresses on holdout is overfitting to the dev set
+- Convergence requires: dev improvement AND holdout consistency (see Strict Eval Gate above)
+
+### Information Barrier
+
+- **Never expose holdout cases to the proposer** (Phase 2 Ideate)
+- The proposer may only see dev set results and execution traces from dev cases
+- Holdout cases are visible only to the evaluator (Phase 5) and the gate (Phase 6)
+- Leaking holdout information into the search process defeats its purpose as a generalization check
