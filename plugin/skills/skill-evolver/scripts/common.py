@@ -7,39 +7,62 @@ from pathlib import Path
 
 
 def find_any_creator(verbose: bool = False) -> tuple[Path | None, str]:
-    """Search for ANY creator-like tool (skill-creator, claw-creator, etc.).
+    """Search for ANY skill with evaluation capabilities (skill-creator, claw-creator, etc.).
+
+    Detection strategy:
+    1. Try skill-creator by name (most common, fast path)
+    2. Scan all installed skills/plugins, read their SKILL.md description,
+       and check for evaluation-related keywords (eval, grading, benchmark, etc.)
 
     Returns (path, creator_name) or (None, "").
-    Searches for skill-creator first, then any *-creator pattern.
     """
     import glob
 
     home = Path.home()
 
-    # First try skill-creator (most common)
+    # Fast path: try skill-creator by name
     sc = find_creator_path(verbose=False)
     if sc:
         if verbose:
             print(f"Found skill-creator at: {sc}", file=sys.stderr)
         return sc, "skill-creator"
 
-    # Search for any *-creator pattern in common locations
-    patterns = [
-        str(home / ".claude" / "plugins" / "marketplaces" / "*" / "plugins" / "*-creator" / "skills" / "*-creator"),
-        str(home / ".claude" / "plugins" / "*-creator" / "skills" / "*-creator"),
-        str(home / ".claude" / "skills" / "*-creator"),
+    # Slow path: scan all skills/plugins for eval capability
+    # Look for any skill whose description suggests it can evaluate skills
+    EVAL_KEYWORDS = {"eval", "grading", "benchmark", "test case", "assertion",
+                     "scoring", "evaluate skill", "skill quality", "run_eval"}
+
+    scan_patterns = [
+        str(home / ".claude" / "plugins" / "marketplaces" / "*" / "plugins" / "*" / "skills" / "*"),
+        str(home / ".claude" / "plugins" / "*" / "skills" / "*"),
+        str(home / ".claude" / "skills" / "*"),
     ]
-    for pattern in patterns:
+
+    for pattern in scan_patterns:
         for p in glob.glob(pattern):
             p = Path(p)
-            if (p / "scripts").is_dir() or (p / "SKILL.md").exists():
-                name = p.name
-                if verbose:
-                    print(f"Found creator: {name} at {p}", file=sys.stderr)
-                return p, name
+            if not (p / "SKILL.md").exists():
+                continue
+            # Read description to check for eval capability
+            try:
+                _, desc, _ = parse_skill_md(p)
+                desc_lower = desc.lower()
+                # Must have eval-related keywords AND scripts/ dir (actual tooling)
+                has_eval_keywords = any(kw in desc_lower for kw in EVAL_KEYWORDS)
+                has_scripts = (p / "scripts").is_dir()
+                if has_eval_keywords and has_scripts:
+                    name = p.name
+                    if verbose:
+                        print(f"Found creator-like tool: {name} at {p}",
+                              file=sys.stderr)
+                        print(f"  (matched eval keywords in description)",
+                              file=sys.stderr)
+                    return p, name
+            except (ValueError, OSError):
+                continue
 
     if verbose:
-        print("No creator found.", file=sys.stderr)
+        print("No creator-like tool found.", file=sys.stderr)
     return None, ""
 
 
