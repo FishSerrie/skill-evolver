@@ -1,0 +1,18 @@
+{
+  "name": "skill-evolver",
+  "version": "1.0.0",
+  "description": "Skill auto-evolution engine - combines skill-creator evaluation + autoresearch iteration principles to automatically create, evaluate, and evolve Claude Code skills through gated optimization loops",
+  "author": {
+    "name": "serriezhang"
+  },
+  "repository": "https://github.com/serriezhang/skill-evolver",
+  "license": "MIT",
+  "keywords": [
+    "skill",
+    "evolution",
+    "optimization",
+    "evaluation",
+    "benchmark",
+    "autoresearch"
+  ]
+}
