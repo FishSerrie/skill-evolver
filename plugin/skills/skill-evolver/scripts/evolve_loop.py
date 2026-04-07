@@ -319,8 +319,13 @@ def phase_7_log(workspace: Path, iteration: int, commit: str,
                 metric: float, delta: float, trigger_f1: float,
                 tokens: int, guard: str, status: str,
                 layer: str, description: str,
-                experiment: dict | None = None) -> None:
-    """Append to results.tsv and experiments.jsonl."""
+                experiment: dict | None = None,
+                traces: dict | None = None) -> None:
+    """Append to results.tsv, experiments.jsonl, and write execution traces.
+
+    Traces (Meta-Harness pattern): full evaluation output per test case,
+    stored as individual files for active diagnosis in Phase 1/2.
+    """
     evolve_dir = workspace / "evolve"
 
     # results.tsv
@@ -336,6 +341,14 @@ def phase_7_log(workspace: Path, iteration: int, commit: str,
         jsonl_path = evolve_dir / "experiments.jsonl"
         with open(jsonl_path, "a") as f:
             f.write(json.dumps(experiment, ensure_ascii=False) + "\n")
+
+    # Execution traces (Meta-Harness: full output per case for diagnosis)
+    if traces:
+        trace_dir = evolve_dir / f"iteration-E{iteration}" / "traces"
+        trace_dir.mkdir(parents=True, exist_ok=True)
+        for case_id, trace_content in traces.items():
+            trace_file = trace_dir / f"case_{case_id}.md"
+            trace_file.write_text(str(trace_content))
 
 
 # ─────────────────────────────────────────────
@@ -778,13 +791,17 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
         delta = new_rate - best_rate
         log(f"  L2: {new_eval.get('total_passed', '?')}/{new_eval.get('total_assertions', '?')} = {new_rate:.0%} (delta: {delta:+.0%})")
 
-        # Phase 6: Gate
+        # Phase 6: Gate (with real metrics from evaluator)
         log("Phase 6: Gate")
         gate = phase_6_gate_decision(
             {"pass_rate": new_rate, "l1_pass": True, "trigger_f1": 1.0,
-             "tokens_mean": 0, "duration_mean": 0, "regression_pass": 1.0},
+             "tokens_mean": new_eval.get("tokens", 0),
+             "duration_mean": new_eval.get("duration", 0.0),
+             "regression_pass": 1.0},
             {"pass_rate": best_rate, "trigger_f1": 1.0,
-             "tokens_mean": 0, "duration_mean": 0, "regression_pass": 1.0},
+             "tokens_mean": baseline.get("tokens", 0),
+             "duration_mean": baseline.get("duration", 0.0),
+             "regression_pass": 1.0},
             {"min_delta": 0.01, "noise_threshold": 0.005}
         )
         decision = gate["decision"]
@@ -798,12 +815,12 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
             git_revert_last(skill_path)
             log(f"  {decision.upper()} — reverted")
 
-        # Phase 7: Log
+        # Phase 7: Log (with traces for Meta-Harness active diagnosis)
         elapsed = time.time() - t0
         phase_7_log(workspace, iteration, commit["commit_hash"],
                     new_rate * 100, delta * 100,
-                    1.0, 0, "pass", decision, current_layer,
-                    result_23["description"],
+                    1.0, new_eval.get("tokens", 0), "pass", decision,
+                    current_layer, result_23["description"],
                     experiment={
                         "iteration": iteration,
                         "mutation_type": result_23["mutation_type"],
@@ -811,7 +828,11 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
                         "intent": result_23["description"],
                         "status": decision,
                         "elapsed_seconds": round(elapsed, 1),
-                    })
+                        "tokens": new_eval.get("tokens", 0),
+                        "duration": new_eval.get("duration", 0.0),
+                        "diagnosis": "",  # populated by Phase 2 in next iteration
+                    },
+                    traces=new_eval.get("traces"))
         log(f"  Logged ({elapsed:.1f}s)")
 
         # Phase 8: Loop control
