@@ -106,12 +106,30 @@ experiment(body): 简化 Stage 2 的节点选择提示
 experiment(description): 增加对打卡异常场景的触发覆盖
 ```
 
-**非 git 环境降级处理：**
+**git 是硬依赖，不降级：**
 
-如果 skill 目录不在 git 管理下，跳过 git 操作，改为：
-1. 将修改前的文件内容备份到 `<workspace>/evolve/best_versions/pre-iteration-N/`
-2. 在 experiments.jsonl 中记录改动的 diff（关键行变更）
-3. 如果 Gate 判定为 discard，手动用备份恢复文件
+Evolve 协议强依赖 git（Phase 1 的 git log memory、Phase 6 的 git revert 回滚）。**没有 git 不跑 evolve**。
+
+如果 skill 目录不在 git 管理下，在 Phase 0 执行：
+```bash
+cd <skill-path>
+git init
+git add .
+git commit -m "chore: init git for skill-evolver evolve tracking"
+```
+
+如果系统没有安装 git：
+```bash
+# macOS
+brew install git
+# 或：xcode-select --install
+
+# Linux
+sudo apt-get install git   # Debian/Ubuntu
+sudo yum install git       # CentOS/RHEL
+```
+
+git 安装完成后继续 Phase 0，不允许跳过。
 
 
 

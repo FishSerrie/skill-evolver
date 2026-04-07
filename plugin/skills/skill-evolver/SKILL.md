@@ -25,7 +25,7 @@ python3 scripts/evolve_loop.py ./my-skill/ --gt ./evals.json --run --max-iterati
 
 **前置条件：**
 - GT 数据（测试用例 + assertions）推荐提前准备；若无，evolve 模式会自动调用 Creator 构造
-- skill 目录推荐在 git 管理下
+- skill 目录**必须在 git 管理下**（若未初始化，Phase 0 强制 `git init`；若系统无 git，先安装再继续）
 - skill-creator 已安装（用于评测能力）
 
 ---
@@ -203,7 +203,7 @@ Phase 0: Setup    → 创建 workspace + 生成 evolve_plan + 建立 baseline
 Phase 1: Review   → 读 memory（results.tsv + experiments.jsonl + git log）
 Phase 2: Ideate   → 分析失败模式，决定改什么（读 agents/search_agent.md）
 Phase 3: Modify   → 做一个原子改动
-Phase 4: Commit   → git commit（如果在 git 管理下）
+Phase 4: Commit   → git commit（强制，skill 必须在 git 管理下；若无则先 git init）
 Phase 5: Verify   → 按 evolve_plan 评测策略执行（调用 Creator 的评测能力）
 Phase 6: Gate     → 多门控判定 keep/discard/revert（读 references/gate_rules.md）
 Phase 7: Log      → 记录 results.tsv + experiments.jsonl（读 references/memory_schema.md）
