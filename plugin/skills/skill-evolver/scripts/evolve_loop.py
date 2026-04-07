@@ -910,6 +910,11 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
 
     cleanup_best_versions(workspace, keep_n=3)
 
+    # Try to launch Creator's eval viewer if available
+    viewer_launched = _try_launch_eval_viewer(workspace, skill_path)
+    if viewer_launched:
+        log("Eval viewer launched — open the URL above to review results")
+
     return {
         "baseline_rate": baseline_rate,
         "best_rate": best_rate,
@@ -917,7 +922,64 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
         "iterations": final_summary["total_iterations"],
         "keeps": final_summary["keep_count"],
         "discards": final_summary["discard_count"],
+        "viewer_launched": viewer_launched,
     }
+
+
+# ─────────────────────────────────────────────
+# Eval Viewer Integration
+# ─────────────────────────────────────────────
+
+def _try_launch_eval_viewer(workspace: Path, skill_path: Path) -> bool:
+    """Try to launch Creator's eval viewer (generate_review.py) if available.
+
+    Generates a static HTML review of the evolution results.
+    Returns True if viewer was launched successfully.
+    """
+    creator_path = find_creator_path()
+    if not creator_path:
+        return False
+
+    viewer_script = creator_path / "eval-viewer" / "generate_review.py"
+    if not viewer_script.exists():
+        return False
+
+    # Parse skill name for the viewer
+    try:
+        name, _, _ = parse_skill_md(skill_path)
+    except (ValueError, FileNotFoundError):
+        name = skill_path.name
+
+    # Find the latest benchmark file
+    evolve_dir = workspace / "evolve"
+    benchmark_path = None
+    for d in sorted(evolve_dir.iterdir(), reverse=True):
+        if d.is_dir() and d.name.startswith("iteration-E"):
+            bp = d / "benchmark.json"
+            if bp.exists():
+                benchmark_path = bp
+                break
+
+    try:
+        cmd = [
+            sys.executable, str(viewer_script),
+            str(workspace),
+            "--skill-name", name,
+            "--static", str(workspace / "evolve" / "review.html"),
+        ]
+        if benchmark_path:
+            cmd.extend(["--benchmark", str(benchmark_path)])
+
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode == 0:
+            print(f"Review saved: {workspace / 'evolve' / 'review.html'}",
+                  file=sys.stderr)
+            return True
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+    return False
 
 
 # ─────────────────────────────────────────────
