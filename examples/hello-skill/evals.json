@@ -1,0 +1,63 @@
+{
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "review this code",
+      "assertions": [
+        {"type": "contains", "value": "code review", "description": "SKILL.md mentions code review"},
+        {"type": "contains", "value": "Python", "description": "SKILL.md mentions Python"}
+      ],
+      "split": "dev"
+    },
+    {
+      "id": 2,
+      "prompt": "check my Python function",
+      "assertions": [
+        {"type": "contains", "value": "bug", "description": "SKILL.md mentions bug detection"},
+        {"type": "contains", "value": "style", "description": "SKILL.md mentions style issues"},
+        {"type": "contains", "value": "performance", "description": "SKILL.md mentions performance"}
+      ],
+      "split": "dev"
+    },
+    {
+      "id": 3,
+      "prompt": "review this code for security issues",
+      "assertions": [
+        {"type": "contains", "value": "security", "description": "SKILL.md should mention security as a review category"},
+        {"type": "not_contains", "value": "always find issues", "description": "Should not force finding issues"}
+      ],
+      "split": "dev",
+      "metadata": {"note": "This case intentionally fails at baseline — security is not mentioned in initial SKILL.md"}
+    },
+    {
+      "id": 4,
+      "prompt": "review my code and show examples of fixes",
+      "assertions": [
+        {"type": "regex", "value": "\\*\\*\\[.+\\]\\*\\*", "description": "Output format uses **[Category]** pattern"},
+        {"type": "contains", "value": "example", "description": "SKILL.md should mention providing examples"},
+        {"type": "contains", "value": "line number", "description": "SKILL.md mentions line numbers"}
+      ],
+      "split": "dev",
+      "metadata": {"note": "Example assertion intentionally fails — not in baseline SKILL.md"}
+    },
+    {
+      "id": 5,
+      "prompt": "is this code efficient?",
+      "assertions": [
+        {"type": "contains", "value": "performance", "description": "Covers performance concerns"},
+        {"type": "not_contains", "value": "rewrite everything", "description": "Should not suggest wholesale rewrites"}
+      ],
+      "split": "holdout"
+    },
+    {
+      "id": 6,
+      "prompt": "review this Python class for best practices",
+      "assertions": [
+        {"type": "contains", "value": "specific", "description": "SKILL.md emphasizes being specific"},
+        {"type": "contains", "value": "actionable", "description": "SKILL.md mentions actionable suggestions"},
+        {"type": "regex", "value": "(?i)line\\s*(number|N|\\d)", "description": "References line numbers in output format"}
+      ],
+      "split": "holdout"
+    }
+  ]
+}
