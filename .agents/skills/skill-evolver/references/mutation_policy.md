@@ -1,108 +1,108 @@
-# 分层 Mutation 策略
+# Layered Mutation Strategy
 
-## 核心原则
+## Core Principle
 
-**一层改不动才进下一层。不允许跨层改动。**
+**Exhaust the current layer before promoting to the next. Cross-layer changes are forbidden.**
 
-每轮只允许在当前 layer 内做一个原子改动。
-
----
-
-## Layer 定义
-
-### Layer 1: Description 层
-
-**改什么**：SKILL.md frontmatter 的 description 字段
-
-**目标**：
-- 该触发时触发（recall）
-- 不该触发时不触发（precision）
-
-**评什么**：trigger F1
-
-**成本**：低——每轮只需跑 trigger eval（20 条 query，秒级）
-
-**方法**：
-- 生成候选 description → 跑 trigger eval → 选最优
-- 可复用 skill-creator 的 run_loop 思想（60/40 train/test split）
-
-**进入条件**：默认第一层（如果 trigger 已经很好，可跳过）
-
-**退出条件**：连续 K 轮（默认 5）无 trigger F1 提升
-
-### Layer 2: SKILL.md Body 层
-
-**改什么**：
-- 指令措辞和表达方式
-- 步骤顺序和流程结构
-- 输出格式模板
-- 规则的组织和优先级
-- 引导语和解释
-
-**目标**：
-- 提升回答质量（pass_rate）
-- 提升行为稳定性（降低方差）
-- 减少无效 token 消耗
-
-**评什么**：behavior GT（assertions pass_rate）
-
-**成本**：中——每轮跑 L2 开发集评测
-
-**方法**：
-- 分析失败 case 的共性
-- 生成针对性的改进假设
-- 做一个原子改动（改一条规则/改一个步骤/改一个模板段落）
-
-**进入条件**：Layer 1 退出后
-
-**退出条件**：连续 K 轮无 pass_rate 提升
-
-### Layer 3: Scripts / References / Resources 层
-
-**改什么**：
-- 辅助脚本的逻辑
-- reference 文件的内容和结构
-- 检索配置和参数
-- 模板文件
-- 知识库索引
-
-**目标**：
-- 提升 skill 能力上限
-- 解决 body 层无法解决的结构性问题
-
-**评什么**：全量 behavior + 性能指标
-
-**成本**：高——每轮跑 L2 + 可能触发 L3
-
-**方法**：
-- 需要更深的 code-level 分析
-- 改动范围可能更大，但仍需保持原子性
-
-**进入条件**：Layer 2 退出后
-
-**退出条件**：连续 K 轮无提升 → 所有 layer 都尝试过，结束 evolve
+Each iteration allows exactly one atomic change within the current layer.
 
 ---
 
-## Layer Promotion 机制
+## Layer Definitions
+
+### Layer 1: Description
+
+**What changes**: The `description` field in SKILL.md frontmatter
+
+**Objective**:
+- Trigger when the skill should trigger (recall)
+- Stay silent when it should not (precision)
+
+**Evaluation metric**: Trigger F1
+
+**Cost**: Low -- each iteration only runs trigger eval (~20 queries, seconds)
+
+**Methods**:
+- Generate candidate descriptions -- run trigger eval -- select the best
+- Can reuse skill-creator's run_loop approach (60/40 train/test split)
+
+**Entry condition**: Default first layer (skip if trigger is already strong)
+
+**Exit condition**: K consecutive iterations (default 5) with no trigger F1 improvement
+
+### Layer 2: SKILL.md Body
+
+**What changes**:
+- Instruction wording and phrasing
+- Step ordering and flow structure
+- Output format templates
+- Rule organization and priority
+- Guidance text and explanations
+
+**Objective**:
+- Improve response quality (pass_rate)
+- Improve behavioral stability (reduce variance)
+- Reduce unnecessary token consumption
+
+**Evaluation metric**: Behavior GT (assertion pass_rate)
+
+**Cost**: Medium -- each iteration runs Dev Eval
+
+**Methods**:
+- Analyze common patterns in failed cases
+- Generate targeted improvement hypotheses
+- Make one atomic change (one rule / one step / one template section)
+
+**Entry condition**: After Layer 1 exits
+
+**Exit condition**: K consecutive iterations with no pass_rate improvement
+
+### Layer 3: Scripts / References / Resources
+
+**What changes**:
+- Helper script logic
+- Reference file content and structure
+- Retrieval configuration and parameters
+- Template files
+- Knowledge base indexes
+
+**Objective**:
+- Raise the skill's capability ceiling
+- Solve structural problems that the body layer cannot address
+
+**Evaluation metric**: Full behavior suite + performance metrics
+
+**Cost**: High -- each iteration runs Dev Eval + may trigger Strict Eval
+
+**Methods**:
+- Requires deeper code-level analysis
+- Change scope may be larger, but atomicity must still be maintained
+
+**Entry condition**: After Layer 2 exits
+
+**Exit condition**: K consecutive iterations with no improvement -- all layers exhausted, end evolve
+
+---
+
+## Layer Promotion Mechanism
 
 ```
-当前 layer 连续 K 轮无 keep
-  → 输出当前 layer 总结（成功/失败改动统计）
-  → 升级到下一 layer
-  → 重置连续 discard 计数器
+Current layer has K consecutive iterations with no keep
+  → Output current layer summary (successful/failed change statistics)
+  → Promote to the next layer
+  → Reset consecutive discard counter
 
-所有 layer 都尝试过且无提升
-  → 输出最终报告
-  → 结束 evolve
+All layers attempted with no improvement
+  → Output final report
+  → End evolve
 ```
 
 ---
 
-## 原子改动自检
+## Atomic Change Self-Check
 
-每次 Modify 后，执行自检：
+After every Modify phase, run this self-check:
 
-1. **一句话测试**：能否用一句话描述这个改动？需要用"and"→ 说明是两个改动，拆分。
-2. **文件数检查**：`git diff --name-only | wc -l`。超过 3 个文件 → 大概率不是原子改动。
-3. **diff 大小检查**：`git diff --stat`。新增行数超过 30 行 → 需要审视是否可以更精简。
+1. **One-sentence test**: Can you describe this change in one sentence? If you need "and", it is two changes -- split them.
+2. **File count check**: `git diff --name-only | wc -l`. More than 3 files -- likely not atomic.
+3. **Diff size check**: `git diff --stat`. More than 30 lines added -- review whether it can be more concise.

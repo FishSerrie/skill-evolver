@@ -1,42 +1,80 @@
 # Memory Schema
 
+## Workspace Structure
+
+```
+<skill-name>-workspace/
+├── evals/                      # GT and evaluation data (from Creator)
+├── evolve/
+│   ├── results.tsv             # Per-iteration summary log
+│   ├── experiments.jsonl        # Per-iteration fine-grained memory
+│   ├── evolve_plan.md          # Adaptive evaluation strategy
+│   ├── best_versions/          # Skill snapshots for each keep
+│   │   ├── iteration-1/
+│   │   ├── iteration-5/
+│   │   └── ...
+│   ├── iteration-E1/           # Per-iteration evaluation artifacts
+│   │   ├── benchmark.json
+│   │   ├── grades/
+│   │   └── traces/             # Execution traces (see below)
+│   ├── iteration-E2/
+│   │   ├── benchmark.json
+│   │   ├── grades/
+│   │   └── traces/
+│   └── ...
+└── ...
+```
+
+### traces/ Directory
+
+Each `iteration-E{N}/traces/` directory stores raw execution traces for that iteration's evaluation. Traces are the primary diagnostic input for Phase 1 (Review) and Phase 2 (Ideate).
+
+Contents:
+- One trace file per evaluated case (e.g., `case-003.trace.md`)
+- Each trace captures: the prompt sent, the full LLM output, assertion results, and any error/crash output
+- Traces for failed cases are the most important -- they are the evidence base for counterfactual diagnosis
+
+Retention policy: keep traces for the 5 most recent iterations and all kept iterations; delete the rest during cleanup.
+
+---
+
 ## results.tsv
 
-AutoResearch 风格实验日志，每轮一行。
+AutoResearch-style experiment log, one row per iteration.
 
-### 格式
+### Format
 
 ```
 # metric_direction: higher_is_better
 iteration<TAB>commit<TAB>metric<TAB>delta<TAB>trigger_f1<TAB>tokens<TAB>guard<TAB>status<TAB>layer<TAB>description
 ```
 
-### 列定义
+### Column Definitions
 
-| 列 | 类型 | 说明 |
+| Column | Type | Description |
 |---|---|---|
-| iteration | int | 序号，0=baseline |
-| commit | string | git short hash（7字符），discard 时为 "-" |
-| metric | float | 主指标值（dev pass_rate，百分比） |
-| delta | float | 相对上一次 best 的变化（带正负号） |
-| trigger_f1 | float | trigger F1 值 |
+| iteration | int | Sequence number, 0 = baseline |
+| commit | string | Git short hash (7 characters), "-" when discarded |
+| metric | float | Primary metric value (dev pass_rate, percentage) |
+| delta | float | Change relative to the previous best (signed) |
+| trigger_f1 | float | Trigger F1 score |
 | tokens | int | tokens_mean |
 | guard | enum | `pass` / `fail` / `-` |
 | status | enum | `baseline` / `keep` / `discard` / `crash` / `revert` |
 | layer | string | `description` / `body` / `script` / `-` |
-| description | string | 一句话描述本轮改动 |
+| description | string | One-sentence description of the iteration's change |
 
-### 示例
+### Example
 
 ```tsv
 iteration	commit	metric	delta	trigger_f1	tokens	guard	status	layer	description
 0	a1b2c3d	65.0	0.0	0.88	1200	pass	baseline	-	initial baseline
-1	b2c3d4e	68.0	+3.0	0.88	1180	pass	keep	body	改进路径检索的易混淆提示
-2	-	64.0	-1.0	0.85	1350	fail	discard	body	简化 Pipeline 为两步
-3	c3d4e5f	70.0	+2.0	0.90	1190	pass	keep	body	增加跨分类检索指引
+1	b2c3d4e	68.0	+3.0	0.88	1180	pass	keep	body	improve ambiguous-path retrieval prompts
+2	-	64.0	-1.0	0.85	1350	fail	discard	body	simplify pipeline to two steps
+3	c3d4e5f	70.0	+2.0	0.90	1190	pass	keep	body	add cross-category retrieval guidance
 ```
 
-### 初始化
+### Initialization
 
 ```bash
 echo "# metric_direction: higher_is_better" > <workspace>/evolve/results.tsv
@@ -47,50 +85,54 @@ echo -e "iteration\tcommit\tmetric\tdelta\ttrigger_f1\ttokens\tguard\tstatus\tla
 
 ## experiments.jsonl
 
-per-case 细粒度实验记忆，每轮一条 JSON。
+Fine-grained per-iteration experiment memory, one JSON object per line.
 
-### 字段定义
+### Field Definitions
 
-| 字段 | 类型 | 说明 |
+| Field | Type | Description |
 |---|---|---|
-| iteration | int | 对应 results.tsv 的 iteration |
-| mutation_type | string | 改动类型（body_rewrite / body_simplify / rule_reorder / template_change / script_fix 等） |
-| mutation_layer | string | 改动层级（description / body / script） |
-| intent | string | 改动意图（一句话） |
-| changed_files | [string] | 被修改的文件列表 |
-| cases_improved | [int] | 本轮变好的 case id 列表 |
-| cases_degraded | [int] | 本轮变差的 case id 列表 |
-| trigger_delta | float | trigger F1 变化量 |
-| token_delta | int | tokens_mean 变化量 |
+| iteration | int | Corresponds to the iteration in results.tsv |
+| mutation_type | string | Change type (body_rewrite / body_simplify / rule_reorder / template_change / script_fix, etc.) |
+| mutation_layer | string | Change layer (description / body / script) |
+| intent | string | Change intent (one sentence) |
+| diagnosis | string | Counterfactual diagnosis from Phase 2: why the targeted cases failed and what this change is expected to fix |
+| changed_files | [string] | List of modified files |
+| cases_improved | [int] | Case IDs that improved this iteration |
+| cases_degraded | [int] | Case IDs that degraded this iteration |
+| trigger_delta | float | Change in trigger F1 |
+| token_delta | int | Change in tokens_mean |
+| tokens | int | Total tokens consumed by this iteration's evaluation |
+| duration | float | Wall-clock duration of this iteration's evaluation (seconds) |
 | status | string | keep / discard / crash / revert |
-| failure_reason | string | 如果 discard/crash，简要原因 |
+| failure_reason | string | If discard/crash, brief reason |
 
-### 示例
+### Example
 
 ```jsonl
-{"iteration":1,"mutation_type":"body_rewrite","mutation_layer":"body","intent":"改进路径检索的易混淆提示","changed_files":["SKILL.md"],"cases_improved":[3,15],"cases_degraded":[],"trigger_delta":0.0,"token_delta":-20,"status":"keep","failure_reason":""}
-{"iteration":2,"mutation_type":"body_simplify","mutation_layer":"body","intent":"简化 Pipeline 为两步","changed_files":["SKILL.md"],"cases_improved":[1],"cases_degraded":[3,23,40],"trigger_delta":-0.03,"token_delta":150,"status":"discard","failure_reason":"regression: 3 cases degraded, trigger dropped"}
+{"iteration":1,"mutation_type":"body_rewrite","mutation_layer":"body","intent":"improve ambiguous-path retrieval prompts","diagnosis":"Case 3 failed because the retrieval step matched the wrong category when paths overlap. Adding an explicit disambiguation rule should force category-aware ranking.","changed_files":["SKILL.md"],"cases_improved":[3,15],"cases_degraded":[],"trigger_delta":0.0,"token_delta":-20,"tokens":4200,"duration":38.5,"status":"keep","failure_reason":""}
+{"iteration":2,"mutation_type":"body_simplify","mutation_layer":"body","intent":"simplify pipeline to two steps","diagnosis":"Hypothesized that the 4-step pipeline introduces unnecessary intermediate state. Merging steps 2-3 should reduce confusion.","changed_files":["SKILL.md"],"cases_improved":[1],"cases_degraded":[3,23,40],"trigger_delta":-0.03,"token_delta":150,"tokens":4350,"duration":42.1,"status":"discard","failure_reason":"regression: 3 cases degraded, trigger dropped"}
 ```
 
 ---
 
 ## best_versions/
 
-每次 keep 时，保存当前 skill 快照：
+On each keep, snapshot the current skill:
 
 ```bash
 cp -r <skill-dir> <workspace>/evolve/best_versions/iteration-<N>/
 ```
 
-保留最近 5 个 best version，更早的自动清理。
+Retain the 5 most recent best versions; auto-clean older snapshots.
 
 ---
 
-## Memory 读取协议
+## Memory Read Protocol
 
-每轮 Phase 1 (Review) 必须读取：
+At every Phase 1 (Review), read:
 
-1. `tail -20 <workspace>/evolve/results.tsv` → 看趋势和最近状态
-2. `tail -10 <workspace>/evolve/experiments.jsonl` → 看细粒度失败原因
-3. `git log --oneline -20` → 看改动历史
-4. 统计 keeps/discards/crashes 比例 → 判断是否 stuck
+1. `tail -20 <workspace>/evolve/results.tsv` -- observe trends and recent status
+2. `tail -10 <workspace>/evolve/experiments.jsonl` -- inspect fine-grained failure reasons and diagnoses
+3. `git log --oneline -20` -- review change history
+4. `ls <workspace>/evolve/iteration-E{N}/traces/` -- scan execution traces for failed cases
+5. Compute keeps/discards/crashes ratio -- determine whether stuck
