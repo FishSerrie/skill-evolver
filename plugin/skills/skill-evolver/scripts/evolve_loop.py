@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from common import find_creator_path, find_workspace, find_evolve_dir, validate_frontmatter
+from common import find_creator_path, find_workspace, find_evolve_dir, validate_frontmatter, parse_skill_md
 from aggregate_results import parse_results_tsv, calculate_summary
 from evaluators import get_evaluator, parse_evaluator_from_plan, Evaluator
 
@@ -1102,6 +1102,8 @@ def auto_construct_gt(skill_path: Path, output_path: Path,
         return None
 
     skill_content = skill_md.read_text()
+    if len(skill_content.strip()) < 50:
+        return None  # SKILL.md too short to auto-construct GT from
 
     prompt = f"""You are generating ground-truth test data for evaluating a skill.
 
