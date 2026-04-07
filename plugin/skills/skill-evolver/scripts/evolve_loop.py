@@ -1063,7 +1063,23 @@ def main():
         return
 
     if not args.gt:
-        parser.error("--gt is required")
+        # Auto-discover GT data
+        candidates = [
+            ws / "evals" / "evals.json",
+            args.skill_path / "evals.json",
+            args.skill_path.parent / "evals.json",
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                args.gt = candidate
+                print(f"Auto-discovered GT data: {candidate}", file=sys.stderr)
+                break
+        if not args.gt:
+            print("Error: No GT data found. Provide --gt or place evals.json in:",
+                  file=sys.stderr)
+            for c in candidates:
+                print(f"  {c}", file=sys.stderr)
+            sys.exit(1)
 
     # Build evaluator from CLI args or evolve_plan.md
     eval_config = {}
@@ -1099,4 +1115,20 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nInterrupted by user.", file=sys.stderr)
+        sys.exit(130)
+    except FileNotFoundError as e:
+        print(f"Error: File not found — {e}", file=sys.stderr)
+        sys.exit(1)
+    except json.JSONDecodeError as e:
+        print(f"Error: Invalid JSON in GT data — {e}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        print("Run with PYTHONTRACEBACK=1 for full traceback.", file=sys.stderr)
+        if os.environ.get("PYTHONTRACEBACK"):
+            raise
+        sys.exit(1)

@@ -6,11 +6,13 @@ import sys
 from pathlib import Path
 
 
-def find_creator_path() -> Path | None:
+def find_creator_path(verbose: bool = False) -> Path | None:
     """Search for skill-creator installation that has scripts/.
 
     Returns the skill-creator directory, or None if not found.
     Searches plugin directories, marketplace plugins, user skills, and project skills.
+
+    When verbose=True, prints search progress and installation hint if not found.
     """
     import glob
 
@@ -46,9 +48,19 @@ def find_creator_path() -> Path | None:
     for p in candidates:
         # Check for scripts/ subdir (full creator) or SKILL.md (minimal)
         if (p / "scripts").is_dir():
+            if verbose:
+                print(f"Found skill-creator at: {p}", file=sys.stderr)
             return p
         if (p / "SKILL.md").exists():
+            if verbose:
+                print(f"Found skill-creator (minimal) at: {p}", file=sys.stderr)
             return p
+
+    if verbose:
+        print("skill-creator not found. Some features will use fallback evaluators.",
+              file=sys.stderr)
+        print("Install from: https://github.com/anthropics/claude-plugins-official",
+              file=sys.stderr)
     return None
 
 
