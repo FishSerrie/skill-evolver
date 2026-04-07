@@ -38,9 +38,13 @@ def phase_0_setup(skill_path: Path, gt_path: Path,
                   workspace: Path | None = None) -> dict:
     """Create workspace, initialize memory, generate evolve_plan template.
 
-    Returns: {"workspace", "evolve_dir", "plan_path", "baseline_needed"}
+    On first use, auto-detects creator tools (skill-creator, claw-creator, etc.)
+    and configures the evaluation pipeline accordingly.
+
+    Returns: {"workspace", "evolve_dir", "plan_path", "baseline_needed", "creator_config"}
     """
     from setup_workspace import setup_workspace  # noqa: sibling import
+    from common import setup_creator_config
 
     ws = workspace or find_workspace(skill_path)
     result = setup_workspace(skill_path, ws)
@@ -48,6 +52,9 @@ def phase_0_setup(skill_path: Path, gt_path: Path,
     evolve_dir = Path(result["evolve_dir"])
     plan_path = evolve_dir / "evolve_plan.md"
     results_tsv = evolve_dir / "results.tsv"
+
+    # First-use creator detection and configuration
+    creator_config = setup_creator_config(ws, skill_path)
 
     # Check if baseline already exists
     baseline_needed = True
@@ -63,6 +70,7 @@ def phase_0_setup(skill_path: Path, gt_path: Path,
         "baseline_needed": baseline_needed,
         "gt_path": str(gt_path),
         "skill_path": str(skill_path),
+        "creator_config": creator_config,
     }
 
 

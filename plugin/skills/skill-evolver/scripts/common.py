@@ -6,6 +6,113 @@ import sys
 from pathlib import Path
 
 
+def find_any_creator(verbose: bool = False) -> tuple[Path | None, str]:
+    """Search for ANY creator-like tool (skill-creator, claw-creator, etc.).
+
+    Returns (path, creator_name) or (None, "").
+    Searches for skill-creator first, then any *-creator pattern.
+    """
+    import glob
+
+    home = Path.home()
+
+    # First try skill-creator (most common)
+    sc = find_creator_path(verbose=False)
+    if sc:
+        if verbose:
+            print(f"Found skill-creator at: {sc}", file=sys.stderr)
+        return sc, "skill-creator"
+
+    # Search for any *-creator pattern in common locations
+    patterns = [
+        str(home / ".claude" / "plugins" / "marketplaces" / "*" / "plugins" / "*-creator" / "skills" / "*-creator"),
+        str(home / ".claude" / "plugins" / "*-creator" / "skills" / "*-creator"),
+        str(home / ".claude" / "skills" / "*-creator"),
+    ]
+    for pattern in patterns:
+        for p in glob.glob(pattern):
+            p = Path(p)
+            if (p / "scripts").is_dir() or (p / "SKILL.md").exists():
+                name = p.name
+                if verbose:
+                    print(f"Found creator: {name} at {p}", file=sys.stderr)
+                return p, name
+
+    if verbose:
+        print("No creator found.", file=sys.stderr)
+    return None, ""
+
+
+def setup_creator_config(workspace: Path, skill_path: Path,
+                         interactive: bool = True) -> dict:
+    """First-use creator configuration.
+
+    Checks if creator is configured in evolve_plan.md.
+    If not, auto-detects or prompts user.
+
+    Returns: {"creator_path": str|None, "creator_name": str, "configured": bool}
+    """
+    plan_path = workspace / "evolve" / "evolve_plan.md"
+
+    # Check if already configured
+    if plan_path.exists():
+        content = plan_path.read_text()
+        for line in content.split("\n"):
+            if line.strip().startswith("creator_path:"):
+                val = line.split(":", 1)[1].strip()
+                if val and val != "auto":
+                    p = Path(val)
+                    if p.exists():
+                        return {"creator_path": str(p),
+                                "creator_name": p.name, "configured": True}
+
+    # Auto-detect
+    creator_path, creator_name = find_any_creator(verbose=True)
+
+    if creator_path:
+        # Found — save to config
+        _save_creator_to_plan(plan_path, str(creator_path), creator_name)
+        return {"creator_path": str(creator_path),
+                "creator_name": creator_name, "configured": True}
+
+    if interactive:
+        # Not found — guide user
+        print("\n" + "=" * 60, file=sys.stderr)
+        print("CREATOR SETUP", file=sys.stderr)
+        print("=" * 60, file=sys.stderr)
+        print("No creator tool found. Options:", file=sys.stderr)
+        print("  1. Install skill-creator (recommended):", file=sys.stderr)
+        print("     https://github.com/anthropics/claude-plugins-official",
+              file=sys.stderr)
+        print("  2. Specify a custom creator path", file=sys.stderr)
+        print("  3. Skip — use built-in evaluator (works for most cases)",
+              file=sys.stderr)
+        print("", file=sys.stderr)
+
+    # Default: no creator, use local evaluator
+    return {"creator_path": None, "creator_name": "", "configured": False}
+
+
+def _save_creator_to_plan(plan_path: Path, creator_path: str,
+                          creator_name: str) -> None:
+    """Save creator configuration to evolve_plan.md."""
+    if not plan_path.exists():
+        return
+    content = plan_path.read_text()
+    # Add or update creator_path line
+    if "creator_path:" in content:
+        lines = content.split("\n")
+        for i, line in enumerate(lines):
+            if line.strip().startswith("creator_path:"):
+                lines[i] = f"creator_path: {creator_path}"
+                break
+        plan_path.write_text("\n".join(lines))
+    else:
+        # Add after evaluator config section
+        content += f"\n## Creator Configuration\ncreator_path: {creator_path}\ncreator_name: {creator_name}\n"
+        plan_path.write_text(content)
+
+
 def find_creator_path(verbose: bool = False) -> Path | None:
     """Search for skill-creator installation that has scripts/.
 
