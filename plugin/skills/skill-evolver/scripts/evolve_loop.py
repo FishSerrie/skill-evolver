@@ -1020,6 +1020,91 @@ def cleanup_eval_outputs(workspace: Path, keep_recent: int = 5) -> list[str]:
 
 
 # ─────────────────────────────────────────────
+# GT Auto-Construction
+# ─────────────────────────────────────────────
+
+def auto_construct_gt(skill_path: Path, output_path: Path,
+                      model: str | None = None) -> dict | None:
+    """Auto-construct GT data by analyzing the skill's SKILL.md.
+
+    Uses LLM to read the skill and generate realistic test cases
+    with assertions. Saves to output_path as evals.json.
+
+    This follows the Creator's test case construction methodology:
+    understand skill → write realistic test prompts → draft assertions.
+
+    Returns: {"count": int} on success, None on failure.
+    """
+    skill_md = skill_path / "SKILL.md"
+    if not skill_md.exists():
+        return None
+
+    skill_content = skill_md.read_text()
+
+    prompt = f"""You are generating ground-truth test data for evaluating a skill.
+
+Read this SKILL.md and generate 8 test cases (6 dev + 2 holdout):
+
+{skill_content[:6000]}
+
+For each test case, create realistic user prompts that would trigger this skill,
+and assertions that check whether the SKILL.md content properly addresses them.
+
+Use these assertion types:
+- "contains": SKILL.md must contain this text (case-insensitive)
+- "not_contains": SKILL.md must NOT contain this text
+- "regex": SKILL.md must match this regex pattern
+
+Output EXACTLY this JSON format (no other text):
+{{
+  "evals": [
+    {{
+      "id": 1,
+      "prompt": "realistic user prompt",
+      "assertions": [
+        {{"type": "contains", "value": "expected text", "description": "what this checks"}}
+      ],
+      "split": "dev",
+      "metadata": {{"note": "why this case matters"}}
+    }}
+  ]
+}}
+
+Requirements:
+- 6 cases with "split": "dev", 2 cases with "split": "holdout"
+- Each case should test a different aspect of the skill
+- Include at least one not_contains assertion (negative test)
+- Make prompts realistic (how a real user would trigger this skill)
+- Assertions should check that SKILL.md has the right instructions
+"""
+
+    response = _call_llm(prompt, model=model, timeout=180)
+
+    # Parse JSON from response
+    for line in response.split("\n"):
+        line = line.strip()
+        if line.startswith("{") and '"evals"' in line:
+            try:
+                data = json.loads(line)
+                output_path.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+                return {"count": len(data.get("evals", []))}
+            except json.JSONDecodeError:
+                pass
+
+    # Try to find JSON block in the full response
+    json_match = re.search(r'\{[\s\S]*"evals"[\s\S]*\}', response)
+    if json_match:
+        try:
+            data = json.loads(json_match.group())
+            output_path.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+            return {"count": len(data.get("evals", []))}
+        except json.JSONDecodeError:
+            pass
+
+    return None
+
+
+# ─────────────────────────────────────────────
 # Main (reference CLI)
 # ─────────────────────────────────────────────
 
@@ -1083,11 +1168,21 @@ def main():
                 print(f"Auto-discovered GT data: {candidate}", file=sys.stderr)
                 break
         if not args.gt:
-            print("Error: No GT data found. Provide --gt or place evals.json in:",
+            # Auto-construct GT using LLM to analyze the skill
+            gt_target = ws / "evals" / "evals.json"
+            gt_target.parent.mkdir(parents=True, exist_ok=True)
+            print("No GT data found. Auto-constructing from SKILL.md...",
                   file=sys.stderr)
-            for c in candidates:
-                print(f"  {c}", file=sys.stderr)
-            sys.exit(1)
+            gt_result = auto_construct_gt(args.skill_path, gt_target,
+                                          model=args.model)
+            if gt_result:
+                args.gt = gt_target
+                print(f"Generated {gt_result['count']} test cases → {gt_target}",
+                      file=sys.stderr)
+            else:
+                print("Error: GT auto-construction failed. Provide --gt manually.",
+                      file=sys.stderr)
+                sys.exit(1)
 
     # Build evaluator from CLI args or evolve_plan.md
     eval_config = {}
