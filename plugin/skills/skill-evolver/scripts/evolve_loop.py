@@ -117,6 +117,25 @@ def phase_1_review(workspace: Path) -> dict:
     except (subprocess.TimeoutExpired, OSError):
         pass
 
+    # Meta-Harness: read execution traces from recent failed iterations
+    # Enables active diagnosis in Phase 2 (grep traces, not guess)
+    recent_traces = {}
+    if rows:
+        # Find the most recent iteration with traces
+        for row in reversed(rows):
+            iter_num = row.get("iteration", 0)
+            trace_dir = evolve_dir / f"iteration-E{iter_num}" / "traces"
+            if trace_dir.exists():
+                for trace_file in sorted(trace_dir.glob("case_*.md"))[:10]:
+                    recent_traces[trace_file.stem] = trace_file.read_text()[:2000]
+                break  # only the most recent iteration's traces
+
+    # Collect past diagnoses (counterfactual insights from prior iterations)
+    past_diagnoses = [
+        e.get("diagnosis") for e in recent_experiments
+        if e.get("diagnosis")
+    ][-5:]
+
     return {
         "iterations": summary["total_iterations"],
         "keeps": summary["keep_count"],
@@ -130,6 +149,8 @@ def phase_1_review(workspace: Path) -> dict:
         "recent_failures": recent_failures,
         "successful_patterns": successful_patterns,
         "git_log": git_log,
+        "recent_traces": recent_traces,
+        "past_diagnoses": past_diagnoses,
     }
 
 
@@ -577,6 +598,20 @@ def phase_2_3_ideate_and_modify(skill_path: Path, workspace: Path,
     recent_failures = json.dumps(review.get("recent_failures", []), ensure_ascii=False)
     successful = json.dumps(review.get("successful_patterns", []), ensure_ascii=False)
 
+    # Meta-Harness: include trace evidence for active diagnosis
+    trace_context = ""
+    recent_traces = review.get("recent_traces", {})
+    if recent_traces:
+        trace_lines = []
+        for name, content in list(recent_traces.items())[:5]:
+            trace_lines.append(f"--- {name} ---\n{content}")
+        trace_context = "\n".join(trace_lines)
+
+    diagnosis_context = ""
+    past_diagnoses = review.get("past_diagnoses", [])
+    if past_diagnoses:
+        diagnosis_context = "\n".join(f"- {d}" for d in past_diagnoses)
+
     prompt = f"""You are optimizing a skill's SKILL.md. Make ONE atomic improvement.
 
 Current SKILL.md ({len(skill_content)} chars) is at: {skill_path / 'SKILL.md'}
@@ -587,17 +622,24 @@ Successful patterns: {successful}
 Current best metric: {review.get('current_best_metric', 'unknown')}
 Is stuck: {review.get('stuck', False)}
 
-Read the SKILL.md at {skill_path / 'SKILL.md'}, then:
-1. Identify ONE specific weakness or area for improvement
-2. Make ONE atomic change using the Edit tool
-3. The change must be explainable in one sentence
-4. Do NOT add unnecessary MUST/NEVER — explain WHY instead
+{"## Execution Traces (from most recent eval)" + chr(10) + trace_context if trace_context else ""}
+
+{"## Past Diagnoses (insights from prior iterations)" + chr(10) + diagnosis_context if diagnosis_context else ""}
+
+MANDATORY PROTOCOL (Meta-Harness active diagnosis):
+1. If traces are provided, READ THEM FIRST — identify the specific assertion
+   that failed and WHY it failed based on the trace evidence
+2. State your diagnosis: "Case X failed because [specific reason from trace]"
+3. Then propose ONE atomic change that directly addresses the diagnosed cause
+4. Do NOT guess — if no trace evidence points to a clear cause, say so
+
+Read the SKILL.md at {skill_path / 'SKILL.md'}, then make your change.
 
 After making the change, output EXACTLY this JSON on the last line:
-{{"changed": true, "description": "one sentence describing what you changed", "mutation_type": "body_rewrite"}}
+{{"changed": true, "description": "one sentence describing what you changed", "mutation_type": "body_rewrite", "diagnosis": "Case X failed because Y, so I changed Z"}}
 
 If you find nothing to improve, output:
-{{"changed": false, "description": "no improvement found", "mutation_type": "none"}}
+{{"changed": false, "description": "no improvement found", "mutation_type": "none", "diagnosis": ""}}
 """
 
     response = _call_claude(prompt, model=model, timeout=180)
@@ -830,7 +872,7 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
                         "elapsed_seconds": round(elapsed, 1),
                         "tokens": new_eval.get("tokens", 0),
                         "duration": new_eval.get("duration", 0.0),
-                        "diagnosis": "",  # populated by Phase 2 in next iteration
+                        "diagnosis": result_23.get("diagnosis", ""),
                     },
                     traces=new_eval.get("traces"))
         log(f"  Logged ({elapsed:.1f}s)")
