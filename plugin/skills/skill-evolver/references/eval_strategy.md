@@ -122,3 +122,29 @@ tune them using these rules of thumb:
 - **Layer promotion**: Refresh optimization priorities and evaluation strategy
 - **5 consecutive discards (stuck)**: Re-analyze failure patterns, refresh strategy
 - **Manual intervention**: User explicitly requests adjustment
+
+---
+
+## script_check Helper Location (Convention)
+
+`script_check` assertions reference helper Python scripts that the GT
+relies on. **These helpers belong in `<workspace>/evals/checks/`, alongside
+`evals.json`** — never inside `<workspace>/evolve/`.
+
+Reason: `evolve/` is the evolver's working directory and its contents
+(best_versions, iteration-EN, results.tsv, experiments.jsonl, …) are
+treated as ephemeral by the cleanup commands documented in
+`evolve_protocol.md`. A helper script that lives in `evolve/checks/` is
+indistinguishable from prior-run debris and gets wiped the moment a user
+asks for "fresh history". Helpers in `evals/checks/` are part of GT and
+survive any evolve-side cleanup.
+
+GT assertions reference helpers as workspace-relative paths:
+
+```json
+{"type": "script_check", "value": "evals/checks/check_X.py", "description": "..."}
+```
+
+The evaluator's `_check_script` resolves workspace-relative paths via
+`find_workspace`, so this convention works for both standalone and
+plugin-hosted skills without code changes.
