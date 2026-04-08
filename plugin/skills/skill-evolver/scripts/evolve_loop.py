@@ -1080,55 +1080,6 @@ def _try_launch_eval_viewer(workspace: Path, skill_path: Path) -> bool:
 # Cleanup helpers
 # ─────────────────────────────────────────────
 
-def cleanup_git_history(skill_path: Path, workspace: Path) -> dict:
-    """Squash all experiment/revert commits into one summary commit.
-
-    Call this AFTER evolve completes. Squashes everything since the
-    commit tagged 'evolve-start' (or the first experiment commit) into
-    a single summary commit to prevent git bloat.
-    """
-
-    rows = parse_results_tsv(workspace)
-    summary = calculate_summary(rows)
-
-    # Find the first experiment commit
-    try:
-        log = subprocess.run(
-            ["git", "log", "--oneline", "--all"],
-            cwd=str(skill_path), capture_output=True, text=True, timeout=10,
-        )
-        lines = log.stdout.strip().split("\n")
-        # Find last non-experiment commit
-        base_hash = None
-        for line in lines:
-            if "experiment(" not in line and "Revert" not in line:
-                base_hash = line.split()[0]
-                break
-    except (subprocess.TimeoutExpired, OSError, IndexError):
-        return {"success": False, "error": "Cannot read git log"}
-
-    if not base_hash:
-        return {"success": False, "error": "No base commit found"}
-
-    # Squash
-    best = summary.get("best_metric", "?")
-    baseline_row = rows[0] if rows else {}
-    baseline_metric = baseline_row.get("metric", "?")
-    keeps = summary.get("keep_count", 0)
-    total = summary.get("total_iterations", 0)
-    msg = (f"evolve: {baseline_metric}% → {best}%, "
-           f"{keeps} keeps in {total} iterations")
-
-    try:
-        subprocess.run(["git", "reset", "--soft", base_hash],
-                       cwd=str(skill_path), capture_output=True, timeout=10)
-        subprocess.run(["git", "commit", "-m", msg],
-                       cwd=str(skill_path), capture_output=True, timeout=10)
-        return {"success": True, "message": msg, "squashed_to": base_hash}
-    except (subprocess.TimeoutExpired, OSError) as e:
-        return {"success": False, "error": str(e)}
-
-
 def cleanup_best_versions(workspace: Path, keep_n: int = 3) -> list[str]:
     """Remove old best_versions, keeping only the most recent N."""
     import shutil
