@@ -213,10 +213,31 @@ class LocalEvaluator(Evaluator):
         from run_l1_gate import run_l1_gate
         return run_l1_gate(skill_path, gt_path)
 
+    def _load_skill_corpus(self, skill_path: Path) -> str:
+        """Load the full skill corpus: SKILL.md + references/*.md + agents/*.md.
+
+        Claude reads all of a skill's files when running it; an evaluator
+        that scores only SKILL.md misses content that legitimately lives
+        in references/ and agents/. This mirrors dev/run_loop.py's
+        build_corpus() so local eval reflects real Claude behavior.
+        """
+        parts = []
+        skill_md = skill_path / "SKILL.md"
+        if skill_md.exists():
+            parts.append(f"### SKILL.md ###\n{skill_md.read_text()}")
+        for subdir in ("references", "agents"):
+            dir_path = skill_path / subdir
+            if not dir_path.is_dir():
+                continue
+            for md in sorted(dir_path.rglob("*.md")):
+                rel = md.relative_to(skill_path)
+                parts.append(f"### {rel} ###\n{md.read_text()}")
+        return "\n\n".join(parts)
+
     def full_eval(self, skill_path: Path, gt_path: Path,
                   split: str = "dev") -> dict:
         t0 = time.time()
-        skill_content = (skill_path / "SKILL.md").read_text()
+        skill_content = self._load_skill_corpus(skill_path)
         data = json.loads(gt_path.read_text())
 
         cases = data if isinstance(data, list) else data.get("evals", [])
