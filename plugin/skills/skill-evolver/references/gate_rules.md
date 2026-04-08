@@ -8,6 +8,10 @@
 
 ## Gate Decision Pseudocode
 
+This pseudocode mirrors the live implementation in
+`scripts/evolve_loop.py::phase_6_gate_decision`. Both holdout consistency
+and the dev-saturation branch are real code paths, not aspirational.
+
 ```python
 def gate_decision(current, baseline, policy):
     """
@@ -23,11 +27,39 @@ def gate_decision(current, baseline, policy):
     if not current.l1_pass:
         return "discard"
 
-    # Multi-gate AND logic
-    quality_ok = (
-        current.dev_pass_rate
-        >= baseline.dev_pass_rate + policy.min_delta
+    # ---- Quality gate, with dev-saturation branch ----
+    # When baseline dev is already at the ceiling (within noise of 1.0),
+    # demanding cur_dev >= base_dev + min_delta is mathematically impossible
+    # (pass_rate cannot exceed 1.0). Switch to "dev does not regress AND
+    # holdout improved by min_delta". This unblocks iterations whose value
+    # lives in holdout improvement (e.g. evaluator/test-framework fixes).
+    has_holdout = (
+        current.holdout_pass_rate is not None
+        and baseline.holdout_pass_rate is not None
     )
+    dev_saturated = baseline.dev_pass_rate >= 1.0 - policy.noise_threshold
+
+    if dev_saturated:
+        dev_no_regress = (
+            current.dev_pass_rate
+            >= baseline.dev_pass_rate - policy.noise_threshold
+        )
+        if has_holdout:
+            holdout_improved = (
+                current.holdout_pass_rate
+                >= baseline.holdout_pass_rate + policy.min_delta
+            )
+            quality_ok = dev_no_regress and holdout_improved
+        else:
+            # No holdout signal and dev is saturated — no honest way to
+            # judge improvement, so don't risk it.
+            quality_ok = False
+    else:
+        quality_ok = (
+            current.dev_pass_rate
+            >= baseline.dev_pass_rate + policy.min_delta
+        )
+
     trigger_ok = (
         current.trigger_f1
         >= baseline.trigger_f1 * (1 - policy.trigger_tolerance)
@@ -45,12 +77,21 @@ def gate_decision(current, baseline, policy):
         >= baseline.regression_pass_rate * (1 - policy.regression_tolerance)
     )
 
-    if quality_ok and trigger_ok and cost_ok and latency_ok and regression_ok:
-        return "keep"
+    # ---- Holdout consistency hard guard (anti-Goodhart) ----
+    # A meaningful holdout regression always vetoes a keep, even if dev
+    # improved. This is the Strict Eval Gate from the section below,
+    # actually wired into the per-iteration decision (not deferred to a
+    # separate convergence check).
+    holdout_consistent = True
+    if has_holdout and (
+        current.holdout_pass_rate
+        < baseline.holdout_pass_rate - policy.noise_threshold
+    ):
+        holdout_consistent = False
 
-    # Change is within noise range — do not risk it
-    if abs(current.dev_pass_rate - baseline.dev_pass_rate) < policy.noise_threshold:
-        return "discard"
+    if (quality_ok and trigger_ok and cost_ok and latency_ok
+            and regression_ok and holdout_consistent):
+        return "keep"
 
     return "discard"
 ```
@@ -87,18 +128,18 @@ These thresholds can be overridden by the user in the evolve configuration.
 
 ## Strict Eval Gate (Supplementary)
 
-When Strict Eval is triggered, apply additional checks:
+> **Note:** holdout consistency is now enforced **on every iteration** by the
+> main gate above (the `holdout_consistent` block). This section originally
+> described a separate convergence-time check; that role is now subsumed by
+> the per-iteration guard. Strict Eval still runs additional surfaces
+> (regression set, blind A/B) but does not need its own quality logic.
 
 ```python
-# Holdout must be directionally consistent with dev
+# Per-iteration holdout consistency (already enforced in gate_decision):
 holdout_consistent = (
     current.holdout_pass_rate
     >= baseline.holdout_pass_rate - policy.noise_threshold
 )
-
-# Dev improved but holdout declined → overfitting signal
-if not holdout_consistent:
-    return "discard"  # suspected overfitting
 ```
 
 ---
