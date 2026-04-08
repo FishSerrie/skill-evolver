@@ -57,3 +57,7 @@ model:
 
 ---
 *This is a template. Claude should analyze the skill and GT data to fill in TODOs before starting evolve.*
+
+## Creator Configuration
+creator_path: /Users/serriezhang/.claude/plugins/marketplaces/claude-plugins-official/plugins/skill-creator/skills/skill-creator
+creator_name: skill-creator
