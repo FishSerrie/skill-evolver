@@ -1,3 +1,0 @@
-# metric_direction: higher_is_better
-iteration	commit	metric	delta	trigger_f1	tokens	guard	status	layer	description
-0	baseline	100.0	+0.0	1.00	0	pass	baseline	-	initial baseline
