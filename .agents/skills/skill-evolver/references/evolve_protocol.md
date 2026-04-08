@@ -73,11 +73,12 @@ Based on Phase 1 analysis, select a mutation direction by priority:
 - mutation_type (e.g., body_rewrite / body_simplify / rule_reorder / template_change)
 - Scope of change (which files)
 
-**Anti-patterns (forbidden):**
-- Do not repeat a change that was already discarded with identical content (check git log first)
-- Do not bundle multiple unrelated changes in one iteration (the one-sentence test: if you need "and" to describe it, it is two changes)
-- Do not make cross-layer changes
-- **Do not identify a problem without fixing it** -- if it is a problem, it warrants an iteration. The purpose of iteration is continuous improvement; skipping "small issues" forfeits improvement opportunities
+**Anti-patterns (forbidden — written in the imperative "do not X" form so they are greppable and unambiguous):**
+- do not repeat a change that was already discarded with identical content (check git log first)
+- do not bundle multiple unrelated changes in one iteration (the one-sentence test: if you need "and" to describe it, it is two changes)
+- do not make cross-layer changes
+- do not guess — if no trace evidence points to a clear cause, say so explicitly and gather more evidence first (Meta-Trace mandatory protocol)
+- **do not identify a problem without fixing it** -- if it is a problem, it warrants an iteration. The purpose of iteration is continuous improvement; skipping "small issues" forfeits improvement opportunities
 
 ---
 

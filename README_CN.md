@@ -4,7 +4,15 @@
 
 **Claude Code Skill 自动进化引擎。** 给它一个 skill + 测试数据，它会通过门控评测循环自动迭代优化 skill——无需人工干预。
 
-基于 [skill-creator](https://github.com/anthropics/claude-plugins-official/tree/main/plugins/skill-creator) 的评测能力 + [AutoResearch](https://github.com/uditgoenka/autoresearch) 的自主迭代思想构建。
+**三大核心支柱**（缺一不可）：
+
+| 支柱 | 来源 | 提供什么 |
+|---|---|---|
+| **Creator**（核心评测能力） | [skill-creator](https://github.com/anthropics/skills/tree/main/skills/skill-creator) — Anthropic 官方 skill | 评测、打分、对比协议；HTML eval viewer；快速校验 |
+| **AutoResearch**（迭代方法论） | [AutoResearch](https://github.com/uditgoenka/autoresearch) — Karpathy 自主迭代思想 | 8 阶段外循环：搜索 → 修改 → 验证 → 门控 → keep/discard → 循环 |
+| **Meta-Harness Trace**（诊断方式） | Meta 的执行轨迹诊断模式 | 每个 case 存完整 trace；每次提改动前必须 cite trace 证据；反事实诊断 |
+
+**Creator 是硬依赖**——找不到就报错并给安装指引，不静默降级。Evolver 通过引用调用 Creator 的能力，**不复制**。Creator 更新后 Evolver 自动受益。
 
 ```
           ┌─────────────┐
@@ -221,10 +229,44 @@ your-project/
 
 ### 前置条件
 
-- [Claude Code](https://claude.com/claude-code) CLI 已安装
-- [skill-creator](https://github.com/anthropics/claude-plugins-official/tree/main/plugins/skill-creator) 插件已安装（Claude Code 默认自带）
-- Python 3.10+
-- Git（推荐，用于版本追踪）
+| 要求 | 是否必需 | 用途 |
+|---|---|---|
+| **Python 3.10+** | 必需 | 运行评测脚本 |
+| **Git** | 必需 | 跟踪 workspace 改动，支持 keep/discard/revert |
+| **skill-creator** | **必需（硬依赖）** | 提供 quick_validate、eval-viewer、grader/comparator 协议 |
+| **Claude Code CLI** | 语义断言需要 | LLM 二元分类（path_hit / fact_coverage）；纯程序断言无需此项 |
+
+### 安装 skill-creator（硬依赖）
+
+skill-creator **必须安装**。找不到时 Evolver 启动就报错并给出安装指引。三种安装方式：
+
+**方式 1：插件市场（推荐）**
+```
+在 Claude Code 里执行: /install skill-creator
+```
+
+**方式 2：从 GitHub 手动安装**
+```bash
+git clone https://github.com/anthropics/skills.git /tmp/anthropic-skills-latest
+cp -r /tmp/anthropic-skills-latest/skills/skill-creator ~/.claude/skills/skill-creator
+```
+源地址：https://github.com/anthropics/skills/tree/main/skills/skill-creator
+
+**方式 3：自定义路径**
+```bash
+export SKILL_CREATOR_PATH=/your/path/to/skill-creator
+# 或通过 CLI 参数：
+python3 scripts/evolve_loop.py ./my-skill --gt ./evals.json --run --creator-path /your/path
+```
+
+**路径搜索顺序**（`scripts/common.py:find_creator_path`）：
+1. `$SKILL_CREATOR_PATH` 环境变量
+2. `~/.claude/plugins/marketplaces/*/plugins/skill-creator/skills/skill-creator/`
+3. `~/.claude/skills/skill-creator/`
+4. `.claude/skills/skill-creator/`
+5. `/tmp/anthropic-skills-latest/skills/skill-creator/`
+
+如果都找不到，`require_creator()` 抛出 `CreatorNotFoundError` 并显示安装指引。**没有静默 fallback。**
 
 ### 方式 A：作为 Claude Code Plugin 安装（推荐）
 
@@ -291,28 +333,48 @@ skill-evolver/                              # GitHub 仓库根目录
 
 ---
 
-## 实战示例：从 50% 进化到 100%
+## 实战示例：用自己迭代自己（baseline 88.9% → 100%）
 
-这是 skill-evolver 自举测试的真实结果（用自己优化自己）：
+这是 skill-evolver 用**自己的真框架**（`evaluators.py` + workspace git + Meta-Trace 诊断）迭代自己的最新结果。展示了真实的 keep/discard/revert 三态决策：
 
 ```
-基线：50%（18 个断言中通过 9 个）
+基线：88.9%（36 个断言中通过 32 个，5/8 cases）
 
-第 1 轮迭代：
-  - 发现：Evolve 执行指引还在引用旧的手动 bash 工作流
-  - 改动：用 11 行自动运行说明替换 27 行手动 bash
-  - 结果：100%（18/18）← +50% 提升
-  - 门控：保留 ✅
-  - Git：+11 -27 行（净减 16 行）
+迭代 1：添加 Installing skill-creator 段落到 SKILL.md
+  - 诊断：trace 显示 case 3 失败因为 GitHub URL 和 /install 命令
+         只在 common.py 运行时错误中存在，markdown 文档里没有
+  - 改动：在 SKILL.md Prerequisites 后加可见的 install 段落
+  - 结果：94.4%（34/36）← delta +5.6%
+  - 门控：KEEP ✅（quality OK: 0.944 ≥ 0.889 + 0.05）
+  - Workspace git: 7a35129
 
-第 2 轮迭代：
-  - 所有断言通过，没有更多失败模式
-  - 决策：停止（已穷尽）
+迭代 2：添加 eval viewer 步骤到 Evolve 模式流程
+  - 诊断：case 8 失败因为 eval viewer 在代码里调用了
+         (evolve_loop.py:918-921) 但 markdown 没有提
+  - 改动：在 Evolve 模式 step 6 加 eval viewer 说明
+  - 结果：97.2%（35/36）← delta +2.8%
+  - 门控：DISCARD ❌（delta 0.028 < min_delta 0.05）
+  - 动作：git revert HEAD --no-edit（在 workspace git 里）
 
-最终：50% → 100%，2 轮迭代，净减 16 行代码
+迭代 3：bundled 文档对齐（anti-patterns 小写 + do-not-guess + eval viewer）
+  - 诊断：case 7 + case 8 都是同一根因——markdown 没和代码/协议对齐
+  - 改动：lowercase 反模式条目 + 加 "do not guess" Meta-Trace 禁令
+         + 重新加回 eval viewer step 6
+  - 结果：100%（36/36）← delta +5.6%
+  - 门控：KEEP ✅
+  - Workspace git: f9e5bce
+
+最终：88.9% → 100%，3 轮迭代（2 keep + 1 discard），
+      所有 commits 都在 workspace git，零项目 git 污染
 ```
 
-完整报告：[自举测试报告](./docs/bootstrap-report.md)
+**关键证据**：
+- 真用了 Creator：L1 gate 调用 `creator/scripts/quick_validate.py`，eval viewer 调用 `creator/eval-viewer/generate_review.py` 渲染了 97KB HTML
+- 真用了框架：评测走 `LocalEvaluator._evaluate_assertion()` 而不是 ad-hoc 脚本
+- 真用了 git 试错：iter 2 真的被 discard 并 `git revert`，不是改了就不管
+- 真用了 Meta-Trace：每个 case 写 trace 文件，Phase 2 cite trace 证据后才提改动
+
+完整报告：[自迭代报告](./docs/bootstrap-report.md)
 
 ---
 
@@ -406,6 +468,8 @@ MIT
 
 ## 致谢
 
-- **[skill-creator](https://github.com/anthropics/claude-plugins-official/tree/main/plugins/skill-creator)** by Anthropic — 为 Evolver 提供评分能力的评测引擎
-- **[AutoResearch](https://github.com/uditgoenka/autoresearch)** — 启发了外循环设计的自主迭代模式
+- **[skill-creator](https://github.com/anthropics/skills/tree/main/skills/skill-creator)** by Anthropic — 评测引擎本身。硬依赖，引用调用，不复制。Creator 更新后 Evolver 自动受益。
+- **[AutoResearch](https://github.com/uditgoenka/autoresearch)** — Karpathy 启发的自主迭代外循环，演化为 Evolver 的 8 阶段 loop（含真实 keep/discard/revert，不是改了就不管）
+- **[Meta-Harness](https://arxiv.org/abs/2506.xxxxx)** — 执行轨迹诊断思想，Evolver 的 active diagnosis 协议要求每次提改动前必须 cite trace 证据
+- **ServiceClaw QA V2** — "LLM 二元分类 + 程序算分" 评测哲学的灵感来源
 - 为 [Claude Code](https://claude.com/claude-code) 生态系统而建

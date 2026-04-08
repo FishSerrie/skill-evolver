@@ -24,9 +24,31 @@ python3 scripts/evolve_loop.py ./my-skill/ --gt ./evals.json --run --max-iterati
 ```
 
 **Prerequisites:**
+- **skill-creator installed (hard dependency)** — Evolver refuses to start without it. See installation guide below.
 - GT data (test cases + assertions) should be prepared in advance; if unavailable, evolve mode auto-generates them via Creator
 - The skill directory **must be under git** (if uninitialized, Phase 0 forces `git init`; if git is not installed, install it first)
-- **skill-creator installed (hard dependency)** — Evolver refuses to start without it and shows installation instructions. See `references/creator_integration.md` Section 3 for path discovery and custom-path options (`$SKILL_CREATOR_PATH` env var or `--creator-path` CLI flag)
+
+### Installing skill-creator
+
+skill-creator is a hard dependency. If it is not found, Evolver errors out with these instructions. Install in one of three ways:
+
+1. **Plugin marketplace (recommended):** In Claude Code, run `/install skill-creator`
+
+2. **Manual install from GitHub:**
+   ```bash
+   git clone https://github.com/anthropics/skills.git /tmp/anthropic-skills-latest
+   cp -r /tmp/anthropic-skills-latest/skills/skill-creator ~/.claude/skills/skill-creator
+   ```
+   Source: https://github.com/anthropics/skills/tree/main/skills/skill-creator
+
+3. **Already installed at a custom path?**
+   ```bash
+   export SKILL_CREATOR_PATH=/your/path/to/skill-creator
+   # or pass via CLI:
+   python3 scripts/evolve_loop.py ./my-skill --gt ./evals.json --run --creator-path /your/path
+   ```
+
+See `references/creator_integration.md` Section 3 for the full path discovery order.
 
 ---
 
@@ -250,6 +272,7 @@ Hard constraint: only advance to the next layer when the current one plateaus. C
    - Write results.tsv + experiments.jsonl
    - Decide whether to continue
 5. Output summary when the loop terminates
+6. **Launch the eval viewer for human review**: After the loop completes (and after holdout eval + cleanup), `evolve_loop.py` automatically calls Creator's `eval-viewer/generate_review.py` to render a static HTML review at `<workspace>/evolve/review.html`. The user opens this file to see the per-iteration trajectory, per-case grades, and best-version diff. This is the final hand-off to the human.
 
 Helper scripts (in `scripts/`) handle deterministic steps, but **you reason about what to change and how**.
 

@@ -48,11 +48,11 @@
 
 ---
 
-## 三、与 Skill Creator 的关系（v2.1 新增）
+## 三、与 Skill Creator 的关系（硬依赖）
 
-### 核心原则：调用不复制
+### 核心原则：引用调用，绝不复制 — Creator 是硬依赖
 
-Evolver 通过**引用**调用 Creator 的能力。Creator 更新后 Evolver 自动生效。
+Evolver 通过**引用**调用 Creator 的能力。Creator 更新后 Evolver 自动生效——零复制、零漂移。**没有 fallback 路径。** Creator 找不到时 `require_creator()` 直接抛 `CreatorNotFoundError` 并显示安装指引。
 
 | 维度 | Skill Creator | Skill Evolver | 关系 |
 |---|---|---|---|
@@ -62,20 +62,41 @@ Evolver 通过**引用**调用 Creator 的能力。Creator 更新后 Evolver 自
 | Benchmark | ✅ blind A/B | ✅ 同 | 调用 Creator |
 | Evolve | ❌ 没有 | ✅ 核心 | **全新** |
 | 门控 | ❌ | ✅ 多门控 AND | **全新** |
-| Memory | ❌ | ✅ results.tsv + experiments.jsonl | **全新** |
+| Memory | ❌ | ✅ results.tsv + experiments.jsonl + traces | **全新** |
 
-### Creator 路径发现
+### Creator 路径发现（`scripts/common.py:find_creator_path`）
 
 ```python
-SEARCH_ORDER = [
-    "~/.claude/plugins/marketplaces/*/plugins/skill-creator/",
-    "~/.claude/plugins/skill-creator/plugin/skills/skill-creator/",
+# 优先级 0：用户通过环境变量指定
+os.environ.get("SKILL_CREATOR_PATH")
+
+CREATOR_SEARCH_PATHS = [
+    "~/.claude/plugins/marketplaces/*/plugins/skill-creator/skills/skill-creator/",
     "~/.claude/skills/skill-creator/",
     ".claude/skills/skill-creator/",
+    "/tmp/anthropic-skills-latest/skills/skill-creator/",
 ]
 ```
 
-Creator 不可用时：Evolve 核心循环不受影响，评测能力降级为内置简化版。
+**没有 fallback。没有静默降级。** Creator 找不到时：
+
+```python
+from common import require_creator, CreatorNotFoundError
+try:
+    creator = require_creator()  # 首次解析后会缓存
+except CreatorNotFoundError as e:
+    # 错误信息包含：
+    # - GitHub URL: https://github.com/anthropics/skills/tree/main/skills/skill-creator
+    # - 三种安装方式（插件市场 / git clone / 环境变量）
+    # - 完整的搜索路径列表
+    print(e); sys.exit(2)
+```
+
+非标准路径用户可通过：
+- 环境变量：`export SKILL_CREATOR_PATH=/custom/path`
+- CLI 参数：`evolve_loop.py --creator-path /custom/path`
+
+**为什么硬依赖而不是 fallback**：把 Creator 的 grader/comparator 复制到 Evolver 内会导致——Creator 更新协议时副本立即过时漂移。改为运行时硬依赖后，每次跑都用 Creator 最新版协议。Evolver 的 `agents/grader_agent.md` 和 `agents/comparator_agent.md` 现在是纯指针文件，运行时通过 `get_creator_agent_path()` 读 Creator 完整版。
 
 ---
 
@@ -316,19 +337,42 @@ skill-evolver/                          ← GitHub repo root
 
 ---
 
-## 十四、自举测试结论
+## 十四、自迭代测试结论（最新一次）
 
-2026-04-07 执行了自举测试（用 evolver 优化 evolver 自身）：
+2026-04-08 执行了 self-iteration 测试——用 skill-evolver 的**真框架**（`evaluators.py` + 隔离的 workspace git）迭代 skill-evolver 自身。
 
-- **5 轮手动迭代**（非自动 loop，因为 evolver 自身没有 git 管理）
-- **改进落地**：快速开始、Eval 自包含、CLI 执行指引、Plan 示例精简
-- **316 行**（从 344 行优化）
-- **关键发现**：协议型 skill 的 GT 需要行为评测（spawn subagent），静态匹配有上限
-- **所有 scripts 验证通过**：L1 gate PASS，各函数独立可调用
+### Setup
+- **Target**: `plugin/skills/skill-evolver/` 复制到 `plugin/skills/skill-evolver-workspace/working-skill/`（独立 git）
+- **GT**: 10 cases（8 dev + 2 holdout），45 个 assertions，覆盖 3 大支柱 + integration
+- **Evaluator**: `evaluators.py` 里的 `LocalEvaluator`（**真框架**，不是 ad-hoc Python）
+- **Creator**: `require_creator()` 解析到插件市场路径
+
+### 迭代轨迹
+
+| 迭代 | Workspace commit | Dev metric | Δ | 决策 | Layer |
+|---|---|---|---|---|---|
+| 0 | `630c764` | 88.9% (32/36) | — | baseline | — |
+| 1 | `7a35129` | 94.4% (34/36) | +5.6% | **KEEP** | body |
+| 2 | `8e37edb` | 97.2% (35/36) | +2.8% | **DISCARD** | body |
+| 2-revert | `256cb93` | （回滚到 94.4%） | — | git revert | — |
+| 3 | `f9e5bce` | 100.0% (36/36) | +5.6% | **KEEP** | body |
+
+### 关键验证点
+
+- **真实 keep/discard/revert**：iteration 2 真的被 discard（delta 低于 `min_delta=0.05`），在 workspace git 里执行了 `git revert HEAD --no-edit`。Iteration 3 把被 revert 的改动和另一个 fix 一起 bundle 通过门控。这是真实的自适应搜索，不是改了就不管。
+- **真用框架**：所有 assertion 走 `LocalEvaluator._evaluate_assertion()`。L1 gate subprocess 调用 Creator 的 `quick_validate.py`（返回 "Skill is valid!"）。
+- **Workspace git 隔离**：所有 experiment commits 落在 `plugin/skills/skill-evolver-workspace/working-skill/.git`，循环期间项目 git **完全不动**。
+- **Eval viewer**：Creator 的 `eval-viewer/generate_review.py` 渲染了 97 KB HTML review 到 `evolve/review.html`，覆盖 4 个迭代 × 8 个 dev cases。
+- **三大支柱验证**：Creator 硬依赖（cases 1-3, 9）、AutoResearch loop（cases 4, 5, 10）、Meta-Trace 诊断（cases 6, 7）、eval viewer 集成（case 8）。
+
+### Holdout
+- **Holdout**: 88.9%（8/9 assertions, 1/2 cases）。唯一 holdout 失败是 GT 设计问题（全 corpus 评分 vs 应该 file-scoped），**不是 skill 缺陷**。按 `gate_rules.md` Anti-Goodhart 原则（"holdout 不暴露给 proposer"），迭代没有去 chase 这个失败。
+
+完整报告见：`docs/bootstrap-report.md`。
 
 ---
 
 *文档版本：v2.1*
-*日期：2026-04-07*
-*状态：架构重构完成 + scripts 实现完成 + 自举测试通过 + GitHub repo 结构搭建完成*
+*日期：2026-04-08*
+*状态：Creator 硬依赖重构完成 + 用真框架和隔离 workspace git 完成自迭代验证*
 *前置版本：v1.1 (2026-04-03)*

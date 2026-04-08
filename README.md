@@ -24,23 +24,33 @@
 
 ---
 
-## Design Philosophy
+## Design Philosophy — Three Pillars
 
-Skill Evolver combines three state-of-the-art ideas:
+Skill Evolver fuses three state-of-the-art ideas. Each is a hard requirement, not an option:
 
-| Layer | Idea | What it does |
-|---|---|---|
-| **AutoResearch** | Karpathy's autonomous iteration | Self-driving loop: modify → verify → keep/discard → repeat |
-| **Creator** | Skill-creator's evaluation framework | GT-based testing with 8 assertion types. LLM does binary YES/NO classification; programs do all scoring |
-| **Meta-Harness** | Full execution trace diagnosis | Store traces, grep before guessing, counterfactual analysis |
+| Pillar | Source | What it provides | How Evolver uses it |
+|---|---|---|---|
+| **Creator** (core capability) | [skill-creator](https://github.com/anthropics/skills/tree/main/skills/skill-creator) — official Anthropic skill | Evaluation, grading, comparison protocols; HTML eval viewer; quick validation | **Hard dependency.** `require_creator()` resolves Creator at startup or errors out. Grading reads Creator's `agents/grader.md` at runtime — no copies kept in Evolver. Creator updates take effect automatically. |
+| **AutoResearch** (loop methodology) | [AutoResearch](https://github.com/uditgoenka/autoresearch) — Karpathy's autonomous iteration pattern | The 8-phase outer loop: search → modify → verify → gate → keep/discard → repeat | Drives Evolver's `evolve_loop.py`. Each iteration is an atomic experiment with multi-gate AND decision and git-based rollback. Real keep/discard/revert — not "edit and forget". |
+| **Meta-Harness** (diagnosis) | Meta's Trace pattern for LLM agent optimization | Store full execution traces per case; cite trace evidence before proposing any fix; counterfactual diagnosis | Every evaluation writes per-case traces to `iteration-E{N}/traces/`. Phase 1 reads them, Phase 2 enforces a mandatory active diagnosis protocol — the search agent must cite specific trace evidence before any mutation. |
 
-**Core evaluation principle:** LLM only makes atomic YES/NO judgments. Programs compute all scores. Same classification always produces the same score. ([Why?](docs/comparison-analysis.md))
+**Core evaluation principle:** LLM only makes atomic YES/NO judgments. Programs compute all scores. Same classification always produces the same score — zero scoring drift. ([Why?](docs/comparison-analysis.md))
+
+**No silent degradation:** Evolver does not contain "fallback copies" of Creator's grader/comparator. The pointer files in `agents/` redirect to Creator's full versions at runtime. If Creator updates its protocol, Evolver picks up the change on the next run.
 
 ---
 
 ## Quick Start
 
-### 1. Install
+### 1. Install skill-creator first (hard dependency)
+
+In Claude Code:
+```
+/install skill-creator
+```
+Or see [Installing skill-creator](#installing-skill-creator-hard-dependency) below for manual options.
+
+### 2. Install skill-evolver
 
 **Option A: Claude Code Plugin (Recommended)**
 ```bash
@@ -55,15 +65,19 @@ mkdir -p ~/.claude/skills/skill-evolver
 cp -R plugin/skills/skill-evolver/* ~/.claude/skills/skill-evolver/
 ```
 
-### 2. Verify Installation
+### 3. Verify both are installed
 
-In Claude Code, type:
+```bash
+python3 -c "
+import sys; sys.path.insert(0, 'plugin/skills/skill-evolver/scripts')
+from common import require_creator
+print(f'skill-creator: {require_creator()}')
+print('skill-evolver: ready')
+"
 ```
-/skill-evolver
-```
-You should see the mode selection prompt.
+If skill-creator is missing, you'll see a clear `CreatorNotFoundError` with three install options.
 
-### 3. Try the Demo
+### 4. Try the Demo
 
 ```bash
 cd examples/hello-skill && git init && git add -A && git commit -m "init"
@@ -79,21 +93,42 @@ See [examples/README.md](examples/README.md) for the full 5-minute walkthrough.
 | Requirement | Required? | Purpose |
 |---|---|---|
 | **Python 3.10+** | Yes | Runs evaluation scripts |
-| **Git** | Yes | Tracks changes, enables keep/discard/revert |
-| **Claude Code CLI** | For LLM features | Semantic assertions (path_hit, fact_coverage) and the evolve proposer |
-| **skill-creator** | Optional | Adds trigger evaluation and HTML eval viewer |
+| **Git** | Yes | Tracks changes in the workspace, enables keep/discard/revert |
+| **skill-creator** | **Yes (hard dependency)** | Provides quick_validate, eval-viewer, grader/comparator protocols |
+| **Claude Code CLI** | For semantic assertions | LLM binary classification for `path_hit` / `fact_coverage` (program-only assertions work without it) |
+
+### Installing skill-creator (Hard Dependency)
+
+skill-creator is **required**. Without it, Evolver errors out at startup with installation instructions. Install in one of three ways:
+
+1. **Plugin marketplace (recommended):** In Claude Code, run `/install skill-creator`
+
+2. **Manual install from GitHub:**
+   ```bash
+   git clone https://github.com/anthropics/skills.git /tmp/anthropic-skills-latest
+   cp -r /tmp/anthropic-skills-latest/skills/skill-creator ~/.claude/skills/skill-creator
+   ```
+   Source: https://github.com/anthropics/skills/tree/main/skills/skill-creator
+
+3. **Already installed at a custom path?**
+   ```bash
+   export SKILL_CREATOR_PATH=/your/path/to/skill-creator
+   # or pass via CLI:
+   python3 scripts/evolve_loop.py ./my-skill --gt ./evals.json --run --creator-path /your/path
+   ```
+
+**Path discovery order** (`scripts/common.py:find_creator_path`):
+1. `$SKILL_CREATOR_PATH` env var
+2. `~/.claude/plugins/marketplaces/*/plugins/skill-creator/skills/skill-creator/`
+3. `~/.claude/skills/skill-creator/`
+4. `.claude/skills/skill-creator/`
+5. `/tmp/anthropic-skills-latest/skills/skill-creator/`
+
+If none of these resolve, `require_creator()` raises `CreatorNotFoundError` with the install message above. There is no silent fallback.
 
 ### Without Claude Code CLI
 
-The 6 program-only assertion types (contains, regex, json_schema, script_check, file_exists, not_contains) work without any LLM. Use `--evaluator local`.
-
-### Without skill-creator
-
-The full evolve loop works. You miss:
-- Trigger F1 evaluation (`scripts/run_eval.py`)
-- HTML eval viewer (`eval-viewer/generate_review.py`)
-
-On first use, Skill Evolver auto-detects any installed creator-like tool by scanning SKILL.md descriptions for evaluation keywords. It finds skill-creator, claw-creator, or any custom evaluator automatically.
+The 6 program-only assertion types (`contains`, `not_contains`, `regex`, `json_schema`, `script_check`, `file_exists`) work without any LLM. Use `--evaluator local`. Only `path_hit` and `fact_coverage` need an LLM backend.
 
 ### Multi-Platform Support
 
@@ -346,10 +381,10 @@ skill-evolver/
 
 | Document | Language | Content |
 |---|---|---|
-| [Architecture v2.1](docs/architecture-v2.1.en.md) | English | Full technical design, 4-layer architecture |
+| [Architecture v2.1](docs/architecture-v2.1.en.md) | English | Full technical design, 4-layer architecture, Creator hard-dependency model |
 | [Architecture v2.1](docs/architecture-v2.1.md) | Chinese | Same content, Chinese version |
 | [Comparison Analysis](docs/comparison-analysis.md) | Chinese | vs AutoResearch, Meta-Harness, ServiceClaw |
-| [Bootstrap Report](docs/bootstrap-report.md) | English | Self-evolution test: 50% → 100% |
+| [Bootstrap Report](docs/bootstrap-report.md) | English | Latest self-iteration: baseline 88.9% → 100% with real keep/discard/revert cycle |
 
 ---
 
@@ -381,8 +416,8 @@ skill-evolver/
 
 ## Acknowledgments
 
-- **[AutoResearch](https://github.com/uditgoenka/autoresearch)** — the autonomous iteration pattern (Karpathy's idea) that inspired the outer loop
-- **[skill-creator](https://github.com/anthropics/claude-plugins-official/tree/main/plugins/skill-creator)** by Anthropic — evaluation engine that powers scoring
-- **[Meta-Harness](https://arxiv.org/abs/2506.xxxxx)** — execution trace diagnosis that inspired the active diagnosis protocol
+- **[skill-creator](https://github.com/anthropics/skills/tree/main/skills/skill-creator)** by Anthropic — the evaluation engine. Hard dependency, called by reference, never copied. Creator updates flow into Evolver automatically.
+- **[AutoResearch](https://github.com/uditgoenka/autoresearch)** — Karpathy-inspired autonomous iteration loop that became Evolver's 8-phase outer loop with real keep/discard/revert (not "edit and forget")
+- **[Meta-Harness](https://arxiv.org/abs/2506.xxxxx)** — execution-trace-based active diagnosis. Every iteration must cite specific trace evidence before proposing a change.
 - **ServiceClaw QA V2** — "LLM classifies, program scores" evaluation philosophy
 - Built for the [Claude Code](https://claude.com/claude-code) ecosystem
