@@ -258,11 +258,22 @@ def phase_2_prepare_ideation(workspace: Path, review: dict,
 def phase_4_commit(skill_path: Path, layer: str, description: str) -> dict:
     """Git add + commit the changes.
 
+    Uses ``git add -u`` (tracked-only) so mid-loop user-added debris
+    (scratch scripts, *.orig backups, editor swap files, etc.) does not
+    get swept into an experiment commit. Paired with the Phase 0
+    clean-tree check, this keeps the invariant "commits contain only
+    the mutation's intended changes" from start to end of the run.
+
+    Layer 3 mutations that legitimately add NEW files need to commit
+    them separately — the loop does not auto-stage untracked content.
+
     Returns: {"success", "commit_hash", "files_changed"}
     """
     try:
-        # Stage changes
-        subprocess.run(["git", "add", "-A"], cwd=str(skill_path),
+        # Stage changes — tracked files only. Anything untracked is
+        # presumed to be the user's own work and left alone. See the
+        # docstring for the Layer 3 caveat.
+        subprocess.run(["git", "add", "-u"], cwd=str(skill_path),
                        capture_output=True, timeout=10)
 
         # Check if there are changes
