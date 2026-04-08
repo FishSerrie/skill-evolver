@@ -138,8 +138,16 @@ class BinaryLLMJudge:
                 return False
             return "YES" in output and "NO" not in output
 
-        except Exception:
+        except Exception as e:
+            # Log the failure instead of silently returning False. A bare
+            # except here used to make LLM-backend crashes (HTTP 500, bad
+            # JSON, timeout, credential error) indistinguishable from a
+            # legitimate "NO" answer, which poisoned Phase 2 diagnosis.
             self.total_duration += time.time() - t0
+            print(
+                f"[warn] BinaryLLMJudge.judge failed: {type(e).__name__}: {e}",
+                file=sys.stderr,
+            )
             return False
 
     def judge_batch(self, questions: list[tuple[str, str]]) -> list[bool]:
