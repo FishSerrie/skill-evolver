@@ -13,7 +13,7 @@ import sys, json, subprocess, shutil
 from pathlib import Path
 from datetime import datetime, timezone
 
-PROJECT_ROOT = Path(__file__).parent.resolve()
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SKILL_SCRIPTS = PROJECT_ROOT / "plugin/skills/skill-evolver/scripts"
 sys.path.insert(0, str(SKILL_SCRIPTS))
 

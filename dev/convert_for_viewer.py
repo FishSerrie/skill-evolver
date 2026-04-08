@@ -11,7 +11,8 @@ Creator viewer expects:
 import json, shutil
 from pathlib import Path
 
-WORKSPACE = Path('plugin/skills/skill-evolver-workspace')
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+WORKSPACE = PROJECT_ROOT / 'plugin/skills/skill-evolver-workspace'
 EVOLVE_DIR = WORKSPACE / 'evolve'
 
 def convert():

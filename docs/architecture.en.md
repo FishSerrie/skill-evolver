@@ -382,9 +382,12 @@ skill-evolver/                          ← GitHub repo root
 ├── .opencode/skills/skill-evolver/     ← OpenCode platform variant (auto-synced)
 ├── docs/
 │   ├── architecture.md                 ← this document (Chinese)
-│   └── architecture.en.md              ← this document (English)
+│   ├── architecture.en.md              ← this document (English)
+│   └── README_CN.md                    ← Chinese README
+├── dev/                                ← Bootstrap / self-iteration tools
+│   ├── run_loop.py                     ← Self-iteration driver
+│   └── convert_for_viewer.py           ← Evolver → Creator viewer format converter
 ├── README.md
-├── README_CN.md
 └── LICENSE
 ```
 

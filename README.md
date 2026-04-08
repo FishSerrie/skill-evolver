@@ -1,4 +1,4 @@
-[English](README.md) | [中文](README_CN.md) | [Architecture](docs/architecture.en.md)
+[English](README.md) | [中文](docs/README_CN.md) | [Architecture](docs/architecture.en.md)
 
 # Skill Evolver
 
@@ -382,10 +382,13 @@ skill-evolver/
 ├── examples/hello-skill/           # 5-minute demo
 ├── docs/
 │   ├── architecture.md             # Technical architecture (Chinese)
-│   └── architecture.en.md          # Technical architecture (English)
+│   ├── architecture.en.md          # Technical architecture (English)
+│   └── README_CN.md                # Chinese README
+├── dev/                            # Bootstrap / self-iteration tools
+│   ├── run_loop.py                 # Self-iteration driver (see docs/bootstrap-report.md)
+│   └── convert_for_viewer.py       # Evolver → Creator viewer format converter
 ├── scripts/                        # Build & sync scripts
 ├── README.md
-├── README_CN.md
 └── LICENSE                         # MIT
 ```
 

@@ -1,4 +1,4 @@
-[English](README.md) | [中文](README_CN.md) | [技术架构](docs/architecture.md)
+[English](../README.md) | [中文](README_CN.md) | [技术架构](architecture.md)
 
 # Skill Evolver
 
@@ -342,8 +342,12 @@ skill-evolver/                              # GitHub 仓库根目录
 │   ├── sync-opencode.sh                    # Claude → OpenCode 同步
 │   ├── sync-codex.sh                       # Claude → Codex 同步
 │   └── sync-all.sh                         # 同步所有平台
+├── dev/                                    # Bootstrap / 自迭代工具
+│   ├── run_loop.py                         # 自迭代驱动 (见 docs/bootstrap-report.md)
+│   └── convert_for_viewer.py               # Evolver → Creator viewer 格式转换
+├── docs/
+│   └── README_CN.md                        # 本文件
 ├── README.md                               # English
-├── README_CN.md                            # 中文
 └── LICENSE
 ```
 
