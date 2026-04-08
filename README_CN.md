@@ -1,3 +1,5 @@
+[English](README.md) | [中文](README_CN.md) | [技术架构](docs/architecture-v2.1.md)
+
 # Skill Evolver
 
 **Claude Code Skill 自动进化引擎。** 给它一个 skill + 测试数据，它会通过门控评测循环自动迭代优化 skill——无需人工干预。

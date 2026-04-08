@@ -1,3 +1,5 @@
+[English](README.md) | [中文](README_CN.md) | [技术架构](docs/architecture-v2.1.md)
+
 # Skill Evolver
 
 **Automatic evolution engine for AI coding agent skills.** Give it a skill + test data, and it iteratively optimizes the skill through gated evaluation loops — no human in the loop required.
