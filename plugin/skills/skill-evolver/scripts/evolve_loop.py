@@ -478,6 +478,36 @@ def phase_6_gate_decision(current_metrics: dict, baseline_metrics: dict,
 # Phase 7: Log (fully automated)
 # ─────────────────────────────────────────────
 
+def persist_traces(workspace: Path, iteration: int,
+                   traces: dict | None) -> Path | None:
+    """Write per-case execution traces to ``iteration-E{N}/traces/``.
+
+    This is the canonical Meta-Harness trace-writing path used by both
+    ``phase_7_log`` (CLI ``--run`` mode) and by in-conversation Claude
+    executors (who should call this directly after ``LocalEvaluator.
+    full_eval`` to persist ``result['traces']`` for the next iteration's
+    Phase 1/2 diagnosis).
+
+    Args:
+        workspace: the skill's workspace directory.
+        iteration: the E-iteration number the traces belong to.
+        traces: dict of ``{case_id: trace_content_str}``, or None/empty
+            to skip.
+
+    Returns:
+        Path to the created ``traces/`` directory, or None if nothing
+        was written.
+    """
+    if not traces:
+        return None
+    trace_dir = workspace / "evolve" / f"iteration-E{iteration}" / "traces"
+    trace_dir.mkdir(parents=True, exist_ok=True)
+    for case_id, trace_content in traces.items():
+        trace_file = trace_dir / f"case_{case_id}.md"
+        trace_file.write_text(str(trace_content))
+    return trace_dir
+
+
 def phase_7_log(workspace: Path, iteration: int, commit: str,
                 metric: float, delta: float, trigger_f1: float,
                 tokens: int, guard: str, status: str,
@@ -486,8 +516,9 @@ def phase_7_log(workspace: Path, iteration: int, commit: str,
                 traces: dict | None = None) -> None:
     """Append to results.tsv, experiments.jsonl, and write execution traces.
 
-    Traces (Meta-Harness pattern): full evaluation output per test case,
-    stored as individual files for active diagnosis in Phase 1/2.
+    Traces are delegated to :func:`persist_traces`, the shared helper
+    in-conversation executors can also call directly without going
+    through the full phase_7_log pipeline.
     """
     evolve_dir = workspace / "evolve"
 
@@ -505,13 +536,8 @@ def phase_7_log(workspace: Path, iteration: int, commit: str,
         with open(jsonl_path, "a") as f:
             f.write(json.dumps(experiment, ensure_ascii=False) + "\n")
 
-    # Execution traces (Meta-Harness: full output per case for diagnosis)
-    if traces:
-        trace_dir = evolve_dir / f"iteration-E{iteration}" / "traces"
-        trace_dir.mkdir(parents=True, exist_ok=True)
-        for case_id, trace_content in traces.items():
-            trace_file = trace_dir / f"case_{case_id}.md"
-            trace_file.write_text(str(trace_content))
+    # Execution traces (shared helper — see docstring for in-conv usage)
+    persist_traces(workspace, iteration, traces)
 
 
 # ─────────────────────────────────────────────
