@@ -129,15 +129,15 @@ tune them using these rules of thumb:
 
 `script_check` assertions reference helper Python scripts that the GT
 relies on. **These helpers belong in `<workspace>/evals/checks/`, alongside
-`evals.json`** — never inside `<workspace>/evolve/`.
+`evals.json`** — never inside the evolver's working directory.
 
-Reason: `evolve/` is the evolver's working directory and its contents
+Reason: the evolve subdirectory is ephemeral — its contents
 (best_versions, iteration-EN, results.tsv, experiments.jsonl, …) are
-treated as ephemeral by the cleanup commands documented in
-`evolve_protocol.md`. A helper script that lives in `evolve/checks/` is
-indistinguishable from prior-run debris and gets wiped the moment a user
-asks for "fresh history". Helpers in `evals/checks/` are part of GT and
-survive any evolve-side cleanup.
+treated as disposable by the cleanup commands documented in
+`evolve_protocol.md`. A helper script that lives inside the evolver's
+working directory is indistinguishable from prior-run debris and gets
+wiped the moment a user asks for "fresh history". Helpers in
+`evals/checks/` are part of GT and survive any evolve-side cleanup.
 
 GT assertions reference helpers as workspace-relative paths:
 

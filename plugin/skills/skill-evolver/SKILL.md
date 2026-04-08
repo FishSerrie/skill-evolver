@@ -105,7 +105,9 @@ some-project/
 │   └── scripts/
 └── my-skill-workspace/             ← shared workspace (Creator + Evolver)
     ├── evals/                      ← Creator's evaluation data
-    │   └── evals.json
+    │   ├── evals.json
+    │   └── checks/                 ← GT-referenced script_check helpers
+    │       └── check_*.py          ← (belongs here, NOT under evolve/)
     ├── iteration-1/                ← Creator's eval iterations (pre-existing)
     ├── iteration-2/
     └── evolve/                     ← Evolver-specific subdirectory
