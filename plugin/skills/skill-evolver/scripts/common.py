@@ -294,10 +294,37 @@ def get_evolver_root() -> Path:
 def find_workspace(skill_path: Path) -> Path:
     """Find or determine workspace path for a skill.
 
-    Convention: <skill-parent>/<skill-name>-workspace/
+    Two conventions, picked automatically by inspecting the resolved path:
+
+    - **Standalone skill** (e.g. end-user's `~/.claude/skills/my-skill/`):
+      workspace is `<skill-parent>/<skill-name>-workspace/`. This is what
+      end users see after installing a skill — flat layout, workspace as
+      an immediate sibling.
+
+    - **Plugin-hosted skill** (path contains `.../plugin/skills/<name>/`):
+      the skill body lives inside a plugin repo. Placing the workspace
+      next to the skill body would pollute the plugin source tree. Walk
+      up past `plugin/skills/` to the plugin repo root and put the
+      workspace alongside the repo root instead — matching the developer
+      mental model that the repo and its workspace are top-level siblings.
+      The workspace is still named after the SKILL (not the repo), so
+      `<repo-parent>/<skill-name>-workspace/`.
+
+    The SKILL name is always the last path component and is used for the
+    workspace name in both conventions — end users and developers refer
+    to "my-skill-workspace", not "my-skill-plugin-workspace".
     """
     skill_path = skill_path.resolve()
     name = skill_path.name
+    parts = skill_path.parts
+    # Plugin layout detection: .../<repo-root>/plugin/skills/<skill-name>/
+    # parts[-1] is the skill name, parts[-2] must be "skills",
+    # parts[-3] must be "plugin".
+    if len(parts) >= 4 and parts[-2] == "skills" and parts[-3] == "plugin":
+        # up past skills/ and plugin/ — reach the plugin repo root
+        repo_root = skill_path.parent.parent.parent
+        return repo_root.parent / f"{name}-workspace"
+    # Standalone: workspace is immediate sibling of the skill dir
     return skill_path.parent / f"{name}-workspace"
 
 
