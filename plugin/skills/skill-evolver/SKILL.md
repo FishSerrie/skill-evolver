@@ -30,9 +30,9 @@ python3 scripts/evolve_loop.py ./my-skill/ --gt ./evals.json --run --max-iterati
 
 ### Installing skill-creator
 
-skill-creator is a hard dependency. If it is not found, Evolver errors out with these instructions. Install in one of three ways:
+skill-creator is a hard dependency. The lookup is performed by `require_creator()` in `scripts/common.py`, which raises with these install instructions if no install is found. Install in one of three ways:
 
-1. **Plugin marketplace (recommended):** In Claude Code, run `/install skill-creator`
+1. **Plugin marketplace (recommended):** In Claude Code, run `/install skill-creator`. Lookup searches `~/.claude/plugins/marketplaces/*/plugins/skill-creator/` first.
 
 2. **Manual install from GitHub:**
    ```bash
@@ -232,6 +232,8 @@ Phase 2: Ideate   → Analyze failure modes, decide what to change (read agents/
                      Uses active diagnosis with execution traces (Meta-Harness pattern):
                      replay failing cases, collect execution traces, then apply
                      counterfactual diagnosis to isolate root causes
+                     Anti-patterns (do not guess, do not bundle unrelated changes,
+                     do not repeat a discarded change) are enforced in agents/search_agent.md.
 Phase 3: Modify   → Make one atomic change
 Phase 4: Commit   → git commit (mandatory — skill must be under git; if not, git init first)
 Phase 5: Verify   → Evaluate per evolve_plan strategy (calls Creator's evaluation capabilities)
@@ -337,7 +339,7 @@ Must be labeled `"dev"` / `"holdout"` / `"regression"`. Split strategy is define
 
 See `references/gate_rules.md` for details.
 
-Core principle: **All keep conditions must be satisfied simultaneously (AND logic)**. Gate thresholds are defined per-skill in evolve_plan.md.
+Core principle: **All keep conditions must be satisfied simultaneously (AND logic)**. Default thresholds (`min_delta=0.02`, `trigger_tolerance=0.05`, `max_token_increase=0.20`, `regression_tolerance=0.05`) are overridable per-skill in `evolve_plan.md`.
 
 ---
 

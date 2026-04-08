@@ -270,6 +270,27 @@ def phase_5_l1_gate(skill_path: Path, gt_path: Path | None = None) -> dict:
 
 
 # ─────────────────────────────────────────────
+# Holdout helper — soft fetch
+# ─────────────────────────────────────────────
+
+def _eval_holdout_or_none(evaluator, skill_path: Path,
+                          gt_path: Path) -> float | None:
+    """Run the evaluator on the holdout split and return the pass rate.
+
+    Returns None when the GT has no holdout cases (so the evaluator either
+    raises or reports zero assertions). The gate then degrades to dev-only
+    quality logic.
+    """
+    try:
+        result = evaluator.full_eval(skill_path, gt_path, split="holdout")
+    except Exception:
+        return None
+    if not result or result.get("total_assertions", 0) == 0:
+        return None
+    return result.get("pass_rate")
+
+
+# ─────────────────────────────────────────────
 # Phase 6: Gate Decision (fully automated)
 # ─────────────────────────────────────────────
 
@@ -300,11 +321,65 @@ def phase_6_gate_decision(current_metrics: dict, baseline_metrics: dict,
     cur_pr = current_metrics.get("pass_rate", 0)
     base_pr = baseline_metrics.get("pass_rate", 0)
 
-    quality_ok = cur_pr >= base_pr + min_delta
-    if quality_ok:
-        reasons.append(f"quality: {cur_pr:.3f} >= {base_pr:.3f} + {min_delta}")
+    # Holdout pass rate (soft-fetch — None means evaluator did not run holdout
+    # split, e.g. GT has no holdout cases). When None, we silently degrade to
+    # the legacy dev-only quality check.
+    cur_ho = current_metrics.get("holdout_pass_rate")
+    base_ho = baseline_metrics.get("holdout_pass_rate")
+    has_holdout = cur_ho is not None and base_ho is not None
+
+    # Dev saturation: when baseline dev is already at the ceiling (within
+    # noise of 1.0), demanding cur_pr >= base_pr + min_delta is mathematically
+    # impossible (pass_rate cannot exceed 1.0). Switch the quality criterion
+    # to "dev does not regress AND holdout improved by min_delta".
+    dev_saturated = base_pr >= 1.0 - noise_threshold
+
+    if dev_saturated:
+        dev_no_regress = cur_pr >= base_pr - noise_threshold
+        if has_holdout:
+            holdout_improved = cur_ho >= base_ho + min_delta
+            quality_ok = dev_no_regress and holdout_improved
+            if quality_ok:
+                reasons.append(
+                    f"quality (dev saturated): dev held at {cur_pr:.3f}, "
+                    f"holdout {cur_ho:.3f} >= {base_ho:.3f} + {min_delta}"
+                )
+            else:
+                if not dev_no_regress:
+                    reasons.append(
+                        f"quality FAIL (dev saturated): dev regressed "
+                        f"{cur_pr:.3f} < {base_pr:.3f} - {noise_threshold}"
+                    )
+                else:
+                    reasons.append(
+                        f"quality FAIL (dev saturated): holdout "
+                        f"{cur_ho:.3f} < {base_ho:.3f} + {min_delta}"
+                    )
+        else:
+            # No holdout data — dev is saturated and we have no other signal
+            # to improve. The only honest call is "no signal, do not risk".
+            quality_ok = False
+            reasons.append(
+                f"quality FAIL (dev saturated, no holdout): no signal to improve"
+            )
     else:
-        reasons.append(f"quality FAIL: {cur_pr:.3f} < {base_pr:.3f} + {min_delta}")
+        quality_ok = cur_pr >= base_pr + min_delta
+        if quality_ok:
+            reasons.append(f"quality: {cur_pr:.3f} >= {base_pr:.3f} + {min_delta}")
+        else:
+            reasons.append(f"quality FAIL: {cur_pr:.3f} < {base_pr:.3f} + {min_delta}")
+
+    # Holdout consistency hard guard (anti-Goodhart): regardless of dev
+    # behavior, a meaningful holdout regression always vetoes a keep. This
+    # implements the Strict Eval Gate from gate_rules.md, which previously
+    # existed only as documented pseudocode with no code path.
+    holdout_consistent = True
+    if has_holdout and cur_ho < base_ho - noise_threshold:
+        holdout_consistent = False
+        reasons.append(
+            f"holdout REGRESS (overfit signal): {cur_ho:.3f} < "
+            f"{base_ho:.3f} - {noise_threshold}"
+        )
 
     cur_trigger = current_metrics.get("trigger_f1", 1.0)
     base_trigger = baseline_metrics.get("trigger_f1", 1.0)
@@ -330,7 +405,8 @@ def phase_6_gate_decision(current_metrics: dict, baseline_metrics: dict,
     if not regression_ok:
         reasons.append(f"regression FAIL: {cur_reg:.3f} < {base_reg:.3f} * {1 - regression_tolerance}")
 
-    if quality_ok and trigger_ok and cost_ok and latency_ok and regression_ok:
+    if (quality_ok and trigger_ok and cost_ok and latency_ok
+            and regression_ok and holdout_consistent):
         return {"decision": "keep", "reasons": reasons}
 
     # Noise check
@@ -783,17 +859,22 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
         log(f"ABORT: L1 gate failed — {l1['errors']}")
         return {"success": False, "error": "L1 gate failed"}
 
-    # Baseline eval
+    # Baseline eval — runs both dev and holdout so the gate can compare
+    # both surfaces from iteration 1 onwards. holdout is soft-fetched and
+    # may be None if the GT has no holdout split.
     log("Phase 0: Baseline eval")
     baseline = evaluator.full_eval(skill_path, gt_path)
     baseline_rate = baseline["pass_rate"]
-    log(f"Baseline: {baseline['total_passed']}/{baseline['total_assertions']} = {baseline_rate:.0%}")
+    baseline_holdout = _eval_holdout_or_none(evaluator, skill_path, gt_path)
+    log(f"Baseline: {baseline['total_passed']}/{baseline['total_assertions']} = {baseline_rate:.0%}"
+        + (f" | holdout {baseline_holdout:.0%}" if baseline_holdout is not None else " | holdout n/a"))
 
     phase_7_log(workspace, 0, "baseline", baseline_rate * 100, 0.0,
                 1.0, 0, "pass", "baseline", "-", "initial baseline")
     save_best_version(skill_path, workspace, 0)
 
     best_rate = baseline_rate
+    best_holdout = baseline_holdout
     current_layer = "body"
 
     for iteration in range(1, max_iterations + 1):
@@ -839,21 +920,26 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
                         f"L1 fail: {result_23['description']}")
             continue
 
-        # L2 eval (uses pluggable evaluator)
+        # L2 eval (uses pluggable evaluator) — dev + holdout so the gate
+        # has both surfaces. holdout is soft-fetched (None if no split).
         log("  L2 eval...")
         new_eval = evaluator.full_eval(skill_path, gt_path)
         new_rate = new_eval["pass_rate"]
+        new_holdout = _eval_holdout_or_none(evaluator, skill_path, gt_path)
         delta = new_rate - best_rate
-        log(f"  L2: {new_eval.get('total_passed', '?')}/{new_eval.get('total_assertions', '?')} = {new_rate:.0%} (delta: {delta:+.0%})")
+        ho_msg = (f" | holdout {new_holdout:.0%}" if new_holdout is not None else "")
+        log(f"  L2: {new_eval.get('total_passed', '?')}/{new_eval.get('total_assertions', '?')} = {new_rate:.0%} (delta: {delta:+.0%}){ho_msg}")
 
-        # Phase 6: Gate (with real metrics from evaluator)
+        # Phase 6: Gate (with real metrics from evaluator, incl. holdout)
         log("Phase 6: Gate")
         gate = phase_6_gate_decision(
-            {"pass_rate": new_rate, "l1_pass": True, "trigger_f1": 1.0,
+            {"pass_rate": new_rate, "holdout_pass_rate": new_holdout,
+             "l1_pass": True, "trigger_f1": 1.0,
              "tokens_mean": new_eval.get("tokens", 0),
              "duration_mean": new_eval.get("duration", 0.0),
              "regression_pass": 1.0},
-            {"pass_rate": best_rate, "trigger_f1": 1.0,
+            {"pass_rate": best_rate, "holdout_pass_rate": best_holdout,
+             "trigger_f1": 1.0,
              "tokens_mean": baseline.get("tokens", 0),
              "duration_mean": baseline.get("duration", 0.0),
              "regression_pass": 1.0},
@@ -861,11 +947,16 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
         )
         decision = gate["decision"]
         log(f"  Decision: {decision}")
+        for r in gate.get("reasons", []):
+            log(f"    · {r}")
 
         if decision == "keep":
             best_rate = new_rate
+            if new_holdout is not None:
+                best_holdout = new_holdout
             save_best_version(skill_path, workspace, iteration)
-            log(f"  KEEP — new best: {best_rate:.0%}")
+            log(f"  KEEP — new best: dev {best_rate:.0%}"
+                + (f", holdout {best_holdout:.0%}" if best_holdout is not None else ""))
         else:
             git_revert_last(skill_path)
             log(f"  {decision.upper()} — reverted")
@@ -988,55 +1079,6 @@ def _try_launch_eval_viewer(workspace: Path, skill_path: Path) -> bool:
 # ─────────────────────────────────────────────
 # Cleanup helpers
 # ─────────────────────────────────────────────
-
-def cleanup_git_history(skill_path: Path, workspace: Path) -> dict:
-    """Squash all experiment/revert commits into one summary commit.
-
-    Call this AFTER evolve completes. Squashes everything since the
-    commit tagged 'evolve-start' (or the first experiment commit) into
-    a single summary commit to prevent git bloat.
-    """
-
-    rows = parse_results_tsv(workspace)
-    summary = calculate_summary(rows)
-
-    # Find the first experiment commit
-    try:
-        log = subprocess.run(
-            ["git", "log", "--oneline", "--all"],
-            cwd=str(skill_path), capture_output=True, text=True, timeout=10,
-        )
-        lines = log.stdout.strip().split("\n")
-        # Find last non-experiment commit
-        base_hash = None
-        for line in lines:
-            if "experiment(" not in line and "Revert" not in line:
-                base_hash = line.split()[0]
-                break
-    except (subprocess.TimeoutExpired, OSError, IndexError):
-        return {"success": False, "error": "Cannot read git log"}
-
-    if not base_hash:
-        return {"success": False, "error": "No base commit found"}
-
-    # Squash
-    best = summary.get("best_metric", "?")
-    baseline_row = rows[0] if rows else {}
-    baseline_metric = baseline_row.get("metric", "?")
-    keeps = summary.get("keep_count", 0)
-    total = summary.get("total_iterations", 0)
-    msg = (f"evolve: {baseline_metric}% → {best}%, "
-           f"{keeps} keeps in {total} iterations")
-
-    try:
-        subprocess.run(["git", "reset", "--soft", base_hash],
-                       cwd=str(skill_path), capture_output=True, timeout=10)
-        subprocess.run(["git", "commit", "-m", msg],
-                       cwd=str(skill_path), capture_output=True, timeout=10)
-        return {"success": True, "message": msg, "squashed_to": base_hash}
-    except (subprocess.TimeoutExpired, OSError) as e:
-        return {"success": False, "error": str(e)}
-
 
 def cleanup_best_versions(workspace: Path, keep_n: int = 3) -> list[str]:
     """Remove old best_versions, keeping only the most recent N."""
