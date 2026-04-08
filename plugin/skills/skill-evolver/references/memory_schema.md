@@ -123,7 +123,7 @@ On each keep, snapshot the current skill:
 cp -r <skill-dir> <workspace>/evolve/best_versions/iteration-<N>/
 ```
 
-Retain the 5 most recent best versions; auto-clean older snapshots.
+Retain the 3 most recent best versions; auto-clean older snapshots (matches `cleanup_best_versions(keep_n=3)` in `scripts/evolve_loop.py`).
 
 ---
 
