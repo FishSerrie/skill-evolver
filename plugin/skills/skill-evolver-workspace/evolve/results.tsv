@@ -1,0 +1,2 @@
+# metric_direction: higher_is_better
+iteration	commit	metric	delta	trigger_f1	tokens	guard	status	layer	description

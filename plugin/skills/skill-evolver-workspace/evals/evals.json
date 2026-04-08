@@ -1,0 +1,141 @@
+{
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "I have a skill I want to optimize, path is ~/.claude/skills/my-rag-skill, run the evolution loop",
+      "assertions": [
+        {"type": "contains", "value": "evolve", "description": "Identifies as evolve mode"},
+        {"type": "contains", "value": "setup_workspace", "description": "Calls setup_workspace script"},
+        {"type": "contains", "value": "Phase 0", "description": "Starts 8-Phase protocol"},
+        {"type": "not_contains", "value": "please provide GT", "description": "Should not block user without attempting GT construction"}
+      ],
+      "split": "dev",
+      "metadata": {"category": "evolve_mode_trigger"}
+    },
+    {
+      "id": 2,
+      "prompt": "/skill-evolver eval ~/.claude/skills/my-pdf-skill",
+      "assertions": [
+        {"type": "contains", "value": "eval", "description": "Identifies as eval mode"},
+        {"type": "not_contains", "value": "automatic loop", "description": "Eval mode should not auto-enter optimization loop"},
+        {"type": "contains", "value": "workspace", "description": "Checks or creates workspace"},
+        {"type": "contains", "value": "benchmark", "description": "Outputs benchmark report"}
+      ],
+      "split": "dev",
+      "metadata": {"category": "eval_mode"}
+    },
+    {
+      "id": 3,
+      "prompt": "Compare ~/.claude/skills/my-skill-v1 and ~/.claude/skills/my-skill-v2, which is better",
+      "assertions": [
+        {"type": "contains", "value": "benchmark", "description": "Identifies as benchmark mode"},
+        {"type": "contains", "value": "A/B", "description": "Mentions A/B comparison"},
+        {"type": "contains", "value": "comparison", "description": "Benchmark mode mentions comparison/analysis"}
+      ],
+      "split": "dev",
+      "metadata": {"category": "benchmark_mode"}
+    },
+    {
+      "id": 4,
+      "prompt": "Make this skill better, path ./my-skill, here is my test data: [{\"input\": \"help me write code\", \"expected\": \"generates Python code\"}]",
+      "assertions": [
+        {"type": "contains", "value": "GT", "description": "Mentions GT data handling"},
+        {"type": "contains", "value": "evolve", "description": "Identifies as evolve mode"},
+        {"type": "contains", "value": "evals.json", "description": "Saves to evals.json"},
+        {"type": "contains", "value": "baseline", "description": "Establishes baseline"}
+      ],
+      "split": "dev",
+      "metadata": {"category": "evolve_with_user_data"}
+    },
+    {
+      "id": 5,
+      "prompt": "/skill-evolver evolve ~/.claude/skills/skill-evolver",
+      "assertions": [
+        {"type": "contains", "value": "Phase 0", "description": "Executes Phase 0 setup"},
+        {"type": "contains", "value": "workspace", "description": "Creates/discovers workspace"},
+        {"type": "contains", "value": "evals", "description": "Prepares GT data"},
+        {"type": "contains", "value": "baseline", "description": "Establishes baseline"},
+        {"type": "contains", "value": "results.tsv", "description": "Initializes results.tsv"}
+      ],
+      "split": "dev",
+      "metadata": {"category": "self_evolve"}
+    },
+    {
+      "id": 6,
+      "prompt": "I want to create a new skill from scratch for processing meeting notes into tasks",
+      "assertions": [
+        {"type": "contains", "value": "create", "description": "Identifies as create mode"},
+        {"type": "contains", "value": "SKILL.md", "description": "Generates SKILL.md"},
+        {"type": "contains", "value": "workspace", "description": "Creates workspace"},
+        {"type": "contains", "value": "GT", "description": "Generates initial GT data template"}
+      ],
+      "split": "dev",
+      "metadata": {"category": "create_mode"}
+    },
+    {
+      "id": 7,
+      "prompt": "evaluate this skill ./my-data-skill --gt ./my_tests.json",
+      "assertions": [
+        {"type": "contains", "value": "eval", "description": "Identifies as eval mode"},
+        {"type": "contains", "value": "--gt", "description": "Supports --gt parameter for custom GT file"}
+      ],
+      "split": "dev",
+      "metadata": {"category": "eval_with_custom_gt"}
+    },
+    {
+      "id": 8,
+      "prompt": "Help me improve the trigger accuracy of this skill at ~/.claude/skills/my-skill",
+      "assertions": [
+        {"type": "contains", "value": "improve", "description": "Identifies as improve mode"},
+        {"type": "contains", "value": "description", "description": "Mentions description/trigger layer optimization"},
+        {"type": "contains", "value": "Layer 1", "description": "Points to Layer 1 mutation"}
+      ],
+      "split": "holdout",
+      "metadata": {"category": "improve_mode_trigger_focused"}
+    },
+    {
+      "id": 9,
+      "prompt": "optimize skill",
+      "assertions": [
+        {"type": "contains", "value": "evolve", "description": "Correctly identifies English trigger word"},
+        {"type": "not_contains", "value": "don't understand", "description": "Should not report not understanding"}
+      ],
+      "split": "holdout",
+      "metadata": {"category": "english_trigger"}
+    },
+    {
+      "id": 10,
+      "prompt": "Auto-optimize ~/.claude/skills/my-skill, but limit to 5 rounds max",
+      "assertions": [
+        {"type": "contains", "value": "evolve", "description": "Identifies as evolve mode"},
+        {"type": "contains", "value": "5", "description": "Recognizes max-iterations parameter"},
+        {"type": "contains", "value": "iterations", "description": "Sets iteration limit"}
+      ],
+      "split": "holdout",
+      "metadata": {"category": "evolve_with_iteration_limit"}
+    },
+    {
+      "id": 11,
+      "prompt": "Evolution stopped halfway last time, I want to resume, skill is at ~/.claude/skills/my-skill",
+      "assertions": [
+        {"type": "contains", "value": "results.tsv", "description": "Reads historical progress"},
+        {"type": "contains", "value": "Phase 1", "description": "Resumes from Review phase, reads memory"},
+        {"type": "contains", "value": "memory", "description": "Recovers memory state"}
+      ],
+      "split": "regression",
+      "metadata": {"category": "resume_evolve"}
+    },
+    {
+      "id": 12,
+      "prompt": "/skill-evolver benchmark ./skill-a ./skill-b --gt ./evals.json",
+      "assertions": [
+        {"type": "contains", "value": "benchmark", "description": "Identifies as benchmark mode"},
+        {"type": "contains", "value": "skill-v1", "description": "Handles first skill path"},
+        {"type": "contains", "value": "skill-v2", "description": "Handles second skill path"},
+        {"type": "contains", "value": "evals.json", "description": "Uses specified GT file"}
+      ],
+      "split": "regression",
+      "metadata": {"category": "benchmark_with_gt"}
+    }
+  ]
+}
