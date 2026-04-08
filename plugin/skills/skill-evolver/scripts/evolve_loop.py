@@ -136,7 +136,9 @@ def phase_1_review(workspace: Path, skill_path: Path) -> dict:
         pass
 
     # Meta-Harness: read execution traces from recent failed iterations
-    # Enables active diagnosis in Phase 2 (grep traces, not guess)
+    # Enables active diagnosis in Phase 2 (grep traces, not guess).
+    # Sort case files by numeric case id so case_10+ don't get truncated
+    # ahead of case_2..case_9 under lex sort (`case_10` precedes `case_2`).
     recent_traces = {}
     if rows:
         # Find the most recent iteration with traces
@@ -144,7 +146,11 @@ def phase_1_review(workspace: Path, skill_path: Path) -> dict:
             iter_num = row.get("iteration", 0)
             trace_dir = evolve_dir / f"iteration-E{iter_num}" / "traces"
             if trace_dir.exists():
-                for trace_file in sorted(trace_dir.glob("case_*.md"))[:10]:
+                case_files = sorted(
+                    trace_dir.glob("case_*.md"),
+                    key=lambda p: _iter_num(p.stem),
+                )
+                for trace_file in case_files[:10]:
                     recent_traces[trace_file.stem] = trace_file.read_text()[:2000]
                 break  # only the most recent iteration's traces
 
@@ -1054,15 +1060,20 @@ def _try_launch_eval_viewer(workspace: Path, skill_path: Path) -> bool:
     except (ValueError, FileNotFoundError):
         name = skill_path.name
 
-    # Find the latest benchmark file
+    # Find the latest benchmark file. Sort numerically by iteration so
+    # iteration-E10 ranks after iteration-E9 (lex sort would render the
+    # stale E9 benchmark as "latest" once the run hits 10+ iterations).
     evolve_dir = workspace / "evolve"
     benchmark_path = None
-    for d in sorted(evolve_dir.iterdir(), reverse=True):
-        if d.is_dir() and d.name.startswith("iteration-E"):
-            bp = d / "benchmark.json"
-            if bp.exists():
-                benchmark_path = bp
-                break
+    iter_dirs = [
+        d for d in evolve_dir.iterdir()
+        if d.is_dir() and d.name.startswith("iteration-E")
+    ]
+    for d in sorted(iter_dirs, key=lambda p: _iter_num(p.name), reverse=True):
+        bp = d / "benchmark.json"
+        if bp.exists():
+            benchmark_path = bp
+            break
 
     try:
         cmd = [
