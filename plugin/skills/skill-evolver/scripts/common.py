@@ -60,11 +60,14 @@ How to install:
   3. Already installed at a custom path?
      export SKILL_CREATOR_PATH=/your/path/to/skill-creator
 
-Searched:
+Searched (in order):
   - $SKILL_CREATOR_PATH ({env_val})
+  - ~/.claude/plugins/marketplaces/*/plugins/skill-creator/skills/skill-creator/
   - ~/.claude/plugins/marketplaces/*/plugins/skill-creator/
+  - ~/.claude/plugins/skill-creator/skills/skill-creator/
+  - ~/.claude/plugins/skill-creator/plugin/skills/skill-creator/
   - ~/.claude/skills/skill-creator/
-  - .claude/skills/skill-creator/
+  - ./.claude/skills/skill-creator/
 """.strip()
     raise CreatorNotFoundError(msg)
 
