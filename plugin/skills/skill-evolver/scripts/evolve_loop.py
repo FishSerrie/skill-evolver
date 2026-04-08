@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from common import require_creator, CreatorNotFoundError, find_workspace, find_evolve_dir, validate_frontmatter, parse_skill_md
+from common import require_creator, CreatorNotFoundError, find_workspace, validate_frontmatter, parse_skill_md
 from aggregate_results import parse_results_tsv, calculate_summary
 from evaluators import get_evaluator, parse_evaluator_from_plan, Evaluator
 
@@ -210,45 +210,10 @@ def phase_1_review(workspace: Path, skill_path: Path) -> dict:
 
 
 # ─────────────────────────────────────────────
-# Phase 2: Ideate (Claude reasoning required)
-# This function prepares the context; Claude makes the decision.
+# Phase 2+3 (Ideate+Modify) lives in phase_2_3_ideate_and_modify below.
+# The earlier phase_2_prepare_ideation helper was removed once the LLM
+# prompt was inlined there — nothing called it.
 # ─────────────────────────────────────────────
-
-def phase_2_prepare_ideation(workspace: Path, review: dict,
-                             evolve_plan: dict | None = None) -> dict:
-    """Prepare context for Claude to decide what to change.
-
-    Returns context data. Claude reads this + evolve_plan.md to decide.
-    """
-    # Determine current layer from plan or history
-    current_layer = "body"  # default
-    if evolve_plan and "optimization_priority" in evolve_plan:
-        current_layer = evolve_plan["optimization_priority"][0] if evolve_plan["optimization_priority"] else "body"
-
-    # Priority suggestions based on review
-    suggestions = []
-    if review.get("stuck"):
-        suggestions.append("STUCK detected — try radical strategy (different layer or approach)")
-    if review.get("recent_failures"):
-        last_failure = review["recent_failures"][-1]
-        suggestions.append(f"Last failure: {last_failure.get('intent', '?')} — avoid repeating")
-    if review.get("successful_patterns"):
-        suggestions.append(f"Successful patterns: {', '.join(set(review['successful_patterns'][-3:]))}")
-
-    return {
-        "current_layer": current_layer,
-        "suggestions": suggestions,
-        "recent_failures": review.get("recent_failures", []),
-        "successful_patterns": review.get("successful_patterns", []),
-        "current_best": review.get("current_best_metric"),
-        "prompt_for_claude": (
-            "Based on the above context, decide:\n"
-            "1. What to change (one atomic modification)\n"
-            "2. mutation_type (body_rewrite / body_simplify / rule_reorder / template_change)\n"
-            "3. One-sentence description of the change\n"
-            "Then execute Phase 3: make the change."
-        ),
-    }
 
 
 # ─────────────────────────────────────────────
