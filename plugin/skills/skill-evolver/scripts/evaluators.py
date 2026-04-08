@@ -347,10 +347,48 @@ class LocalEvaluator(Evaluator):
 
     def _check_script(self, script_path: str, content: str,
                       skill_path: Path) -> bool:
-        """Run an external script with content on stdin (program-only)."""
+        """Run an external script and use its exit code as pass/fail.
+
+        Script path resolution order:
+          1. Absolute path → used as-is.
+          2. Workspace-relative → ``<skill-parent>/<skill-name>-workspace/<script_path>``
+             for standalone skills, or ``<repo-root-parent>/<skill-name>-workspace/<script_path>``
+             for plugin-hosted skills (mirrors ``find_workspace``).
+             **Preferred location**: eval-harness check scripts belong in the
+             workspace (a gitignored, per-user artifact), not inside the
+             shipped skill body.
+          3. Skill-relative → ``skill_path/<script_path>`` (legacy fallback
+             for older GT files that still point inside the skill).
+
+        The script runs with ``cwd=skill_path``, so ``Path.cwd()`` inside the
+        script resolves to the skill root regardless of where the script
+        file physically lives.
+        """
+        from common import find_workspace  # local import to avoid cycles
+
+        p = Path(script_path)
+        if p.is_absolute():
+            resolved: Path | None = p if p.exists() else None
+        else:
+            # Resolve skill_path first — Path('.').name == '' would otherwise
+            # produce a bogus workspace path.
+            skill_root = skill_path.resolve()
+            workspace = find_workspace(skill_root)
+            workspace_candidate = workspace / script_path
+            skill_candidate = skill_root / script_path
+            if workspace_candidate.exists():
+                resolved = workspace_candidate
+            elif skill_candidate.exists():
+                resolved = skill_candidate
+            else:
+                resolved = None
+
+        if resolved is None:
+            return False
+
         try:
             result = subprocess.run(
-                [sys.executable, script_path],
+                [sys.executable, str(resolved)],
                 input=content, capture_output=True, text=True,
                 timeout=30, cwd=str(skill_path),
             )
