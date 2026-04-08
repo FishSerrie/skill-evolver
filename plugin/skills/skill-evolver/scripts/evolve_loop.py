@@ -897,7 +897,8 @@ def _local_eval(skill_path: Path, gt_path: Path) -> dict:
 def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
                     max_iterations: int = 20, model: str | None = None,
                     verbose: bool = True,
-                    evaluator: Evaluator | None = None) -> dict:
+                    evaluator: Evaluator | None = None,
+                    dry_run: bool = False) -> dict:
     """Run the complete 8-phase evolve loop.
 
     This is the REAL auto loop. Phase 2+3 use claude -p for LLM reasoning.
@@ -906,6 +907,13 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
     Args:
         evaluator: Pluggable evaluator instance. If None, auto-detects from
                    evolve_plan.md config or defaults to CreatorEvaluator.
+        dry_run: Preview mode. Phases 0..3 run normally (setup, baseline,
+                 first-iteration review, ideate+modify), but the loop
+                 breaks BEFORE phase_4_commit — no git commit happens,
+                 no gate decision, no log write beyond the baseline.
+                 The mutation proposal from phase_2_3 is returned in the
+                 result dict so the user can inspect what would have
+                 been changed before allowing a real run.
     """
     # Initialize evaluator
     if evaluator is None:
@@ -984,6 +992,25 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
             phase_7_log(workspace, iteration, "-", best_rate * 100, 0.0,
                         1.0, 0, "pass", "exhausted", current_layer, "no improvement found")
             break
+
+        # Dry-run: stop here, before Phase 4 commits anything. Revert
+        # the mutation first so the working tree matches what Phase 0
+        # started with. The loop returns the proposed change so the
+        # caller can inspect it.
+        if dry_run:
+            log("DRY-RUN: phase_2_3 proposed a mutation — reverting working tree and exiting")
+            subprocess.run(
+                ["git", "checkout", "--", "."], cwd=str(skill_path),
+                capture_output=True, text=True, timeout=10,
+            )
+            return {
+                "success": True,
+                "dry_run": True,
+                "baseline_pass_rate": baseline_rate,
+                "proposed_mutation": result_23,
+                "best_metric": best_rate,
+                "iterations_run": 1,
+            }
 
         # Phase 4: Commit
         log("Phase 4: Commit")
@@ -1346,6 +1373,11 @@ def main():
                         help="Test command (for --evaluator pytest)")
     parser.add_argument("--run", action="store_true",
                         help="Run the full auto evolve loop")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Preview the first iteration's proposed "
+                             "mutation without committing or gating — "
+                             "Phase 0..3 run, then the working tree "
+                             "is reverted and the proposal is returned")
     parser.add_argument("--info", action="store_true")
     parser.add_argument("--cleanup", action="store_true")
     parser.add_argument("--cleanup-versions", action="store_true")
@@ -1434,15 +1466,16 @@ def main():
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(2)
 
-    if args.run:
-        # THE REAL LOOP
+    if args.run or args.dry_run:
+        # THE REAL LOOP (or dry-run preview)
         result = run_evolve_loop(
             args.skill_path, args.gt, ws,
             max_iterations=args.max_iterations,
             model=args.model, verbose=args.verbose,
             evaluator=evaluator_instance,
+            dry_run=args.dry_run,
         )
-        print(json.dumps(result, indent=2))
+        print(json.dumps(result, indent=2, default=str))
     else:
         # Setup only
         setup = phase_0_setup(args.skill_path, args.gt, ws)
