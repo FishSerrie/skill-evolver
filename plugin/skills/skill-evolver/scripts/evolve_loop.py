@@ -1090,13 +1090,31 @@ def _try_launch_eval_viewer(workspace: Path, skill_path: Path) -> bool:
 # Cleanup helpers
 # ─────────────────────────────────────────────
 
+def _iter_num(name: str) -> int:
+    """Extract the trailing integer from an iteration directory name.
+
+    Handles both ``iteration-<N>`` (best_versions) and ``iteration-E<N>``
+    (eval output) forms. Returns -1 for anything that doesn't match so
+    unexpected entries sort first and get pruned first rather than
+    silently shadowing real iterations.
+    """
+    import re
+    m = re.search(r"(\d+)$", name)
+    return int(m.group(1)) if m else -1
+
+
 def cleanup_best_versions(workspace: Path, keep_n: int = 3) -> list[str]:
-    """Remove old best_versions, keeping only the most recent N."""
+    """Remove old best_versions, keeping only the most recent N.
+
+    Sorts by iteration NUMBER, not string — otherwise ``iteration-10``
+    sorts before ``iteration-2`` under lexicographic order and the newest
+    iterations would get pruned once the run hits 10+ iterations.
+    """
     import shutil
     bv_dir = workspace / "evolve" / "best_versions"
     if not bv_dir.exists():
         return []
-    dirs = sorted(bv_dir.iterdir(), key=lambda d: d.name)
+    dirs = sorted(bv_dir.iterdir(), key=lambda d: _iter_num(d.name))
     removed = []
     while len(dirs) > keep_n:
         old = dirs.pop(0)
@@ -1107,7 +1125,12 @@ def cleanup_best_versions(workspace: Path, keep_n: int = 3) -> list[str]:
 
 
 def cleanup_eval_outputs(workspace: Path, keep_recent: int = 5) -> list[str]:
-    """Remove old iteration-EN/ dirs, keeping recent N and all 'keep' iterations."""
+    """Remove old iteration-EN/ dirs, keeping recent N and all 'keep' iterations.
+
+    Uses numeric sort (see _iter_num) so ``iteration-E10`` correctly ranks
+    after ``iteration-E9`` — lexicographic sort would delete the newest
+    iterations at 10+ rounds.
+    """
     import shutil
 
     evolve_dir = workspace / "evolve"
@@ -1116,10 +1139,10 @@ def cleanup_eval_outputs(workspace: Path, keep_recent: int = 5) -> list[str]:
     # Find which iterations were 'keep'
     keep_iters = {r.get("iteration") for r in rows if r.get("status") == "keep"}
 
-    # List all iteration-E* dirs
+    # List all iteration-E* dirs, numerically sorted by suffix.
     iter_dirs = sorted(
         [d for d in evolve_dir.iterdir() if d.is_dir() and d.name.startswith("iteration-E")],
-        key=lambda d: d.name,
+        key=lambda d: _iter_num(d.name),
     )
 
     # Determine which to keep
