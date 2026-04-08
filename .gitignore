@@ -10,3 +10,7 @@ node_modules/
 evolve-test/
 evolve-workspace
 *-workspace/
+
+# Private docs — local only, not published to GitHub
+docs/bootstrap-report.md
+docs/comparison-analysis.md

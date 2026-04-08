@@ -1,4 +1,4 @@
-[English](README.md) | [中文](README_CN.md) | [技术架构](docs/architecture-v2.1.md)
+[English](README.md) | [中文](README_CN.md) | [Architecture](docs/architecture.en.md)
 
 # Skill Evolver
 
@@ -34,7 +34,7 @@ Skill Evolver fuses three state-of-the-art ideas. Each is a hard requirement, no
 | **AutoResearch** (loop methodology) | [AutoResearch](https://github.com/uditgoenka/autoresearch) — Karpathy's autonomous iteration pattern | The 8-phase outer loop: search → modify → verify → gate → keep/discard → repeat | Drives Evolver's `evolve_loop.py`. Each iteration is an atomic experiment with multi-gate AND decision and git-based rollback. Real keep/discard/revert — not "edit and forget". |
 | **Meta-Harness** (diagnosis) | Meta's Trace pattern for LLM agent optimization | Store full execution traces per case; cite trace evidence before proposing any fix; counterfactual diagnosis | Every evaluation writes per-case traces to `iteration-E{N}/traces/`. Phase 1 reads them, Phase 2 enforces a mandatory active diagnosis protocol — the search agent must cite specific trace evidence before any mutation. |
 
-**Core evaluation principle:** LLM only makes atomic YES/NO judgments. Programs compute all scores. Same classification always produces the same score — zero scoring drift. ([Why?](docs/comparison-analysis.md))
+**Core evaluation principle:** LLM only makes atomic YES/NO judgments. Programs compute all scores. Same classification always produces the same score — zero scoring drift.
 
 **No silent degradation:** Evolver does not contain "fallback copies" of Creator's grader/comparator. The pointer files in `agents/` redirect to Creator's full versions at runtime. If Creator updates its protocol, Evolver picks up the change on the next run.
 
@@ -365,10 +365,8 @@ skill-evolver/
 ├── .agents/skills/skill-evolver/   # Codex variant (auto-synced)
 ├── examples/hello-skill/           # 5-minute demo
 ├── docs/
-│   ├── architecture-v2.1.md        # Technical architecture (Chinese)
-│   ├── architecture-v2.1.en.md     # Technical architecture (English)
-│   ├── comparison-analysis.md      # vs AutoResearch, Meta-Harness
-│   └── bootstrap-report.md         # Self-evolution test results
+│   ├── architecture.md             # Technical architecture (Chinese)
+│   └── architecture.en.md          # Technical architecture (English)
 ├── scripts/                        # Build & sync scripts
 ├── README.md
 ├── README_CN.md
@@ -381,10 +379,8 @@ skill-evolver/
 
 | Document | Language | Content |
 |---|---|---|
-| [Architecture v2.1](docs/architecture-v2.1.en.md) | English | Full technical design, 4-layer architecture, Creator hard-dependency model |
-| [Architecture v2.1](docs/architecture-v2.1.md) | Chinese | Same content, Chinese version |
-| [Comparison Analysis](docs/comparison-analysis.md) | Chinese | vs AutoResearch, Meta-Harness, ServiceClaw |
-| [Bootstrap Report](docs/bootstrap-report.md) | English | Latest self-iteration: baseline 88.9% → 100% with real keep/discard/revert cycle |
+| [Architecture](docs/architecture.en.md) | English | Full technical design, 4-layer architecture, Creator hard-dependency model |
+| [Architecture](docs/architecture.md) | Chinese | Same content, Chinese version |
 
 ---
 

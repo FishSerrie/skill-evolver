@@ -1,4 +1,4 @@
-[English](README.md) | [中文](README_CN.md) | [技术架构](docs/architecture-v2.1.md)
+[English](README.md) | [中文](README_CN.md) | [技术架构](docs/architecture.md)
 
 # Skill Evolver
 
@@ -316,8 +316,8 @@ skill-evolver/                              # GitHub 仓库根目录
 │           ├── agents/                     # 4 个 agent 协议
 │           └── scripts/                    # 7 个 Python 脚本
 ├── docs/                                   # 技术文档（给人看的）
-│   ├── architecture-v2.1.md                # 完整技术架构
-│   └── bootstrap-report.md                 # 自举测试报告
+│   ├── architecture.md                     # 完整技术架构（中文）
+│   └── architecture.en.md                  # 完整技术架构（英文）
 ├── .opencode/                              # OpenCode 平台变体（自动生成）
 │   └── skills/skill-evolver/               # 同一 skill，平台适配
 ├── .agents/                                # Codex 平台变体（自动生成）
@@ -374,7 +374,6 @@ skill-evolver/                              # GitHub 仓库根目录
 - 真用了 git 试错：iter 2 真的被 discard 并 `git revert`，不是改了就不管
 - 真用了 Meta-Trace：每个 case 写 trace 文件，Phase 2 cite trace 证据后才提改动
 
-完整报告：[自迭代报告](./docs/bootstrap-report.md)
 
 ---
 
@@ -406,8 +405,8 @@ python3 scripts/evolve_loop.py ./my-skill/ --cleanup-versions
 
 ## 技术文档
 
-- **[技术架构 v2.1](./docs/architecture-v2.1.md)** — 完整技术设计：四层架构、workspace 设计、协议细节、v1.1 → v2.1 变更日志
-- **[自举测试报告](./docs/bootstrap-report.md)** — 自进化测试结果
+- **[技术架构（中文）](./docs/architecture.md)** — 完整技术设计：四层架构、三大支柱、Creator 硬依赖、workspace 设计、协议细节
+- **[Technical Architecture (English)](./docs/architecture.en.md)** — Same content, English version
 
 ---
 
