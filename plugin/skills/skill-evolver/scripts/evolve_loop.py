@@ -78,8 +78,17 @@ def phase_0_setup(skill_path: Path, gt_path: Path,
 # Phase 1: Review (fully automated)
 # ─────────────────────────────────────────────
 
-def phase_1_review(workspace: Path) -> dict:
+def phase_1_review(workspace: Path, skill_path: Path) -> dict:
     """Read memory and analyze current state.
+
+    Args:
+        workspace: the evolve workspace containing results.tsv and
+            experiments.jsonl.
+        skill_path: the skill directory under git. Required so the git
+            log read runs inside the actual repo; previous versions
+            passed ``workspace.parent`` here, which is the GRANDPARENT
+            of the skill and typically not a git repo at all, so the
+            git log silently returned empty and Phase 2 had no history.
 
     Returns: {"iterations", "keeps", "discards", "stuck", "recent_failures",
               "successful_patterns", "current_best_metric", "git_log"}
@@ -112,13 +121,14 @@ def phase_1_review(workspace: Path) -> dict:
         if e.get("status") in ("discard", "crash")
     ][-5:]  # last 5 failures
 
-    # Try to get git log
+    # Try to get git log — must run inside the skill dir (the git repo),
+    # NOT in workspace.parent (the skill's grandparent, typically not a repo).
     git_log = ""
     try:
         result = subprocess.run(
             ["git", "log", "--oneline", "-15"],
             capture_output=True, text=True, timeout=5,
-            cwd=str(workspace.parent),  # skill parent dir
+            cwd=str(skill_path),
         )
         if result.returncode == 0:
             git_log = result.stdout.strip()
@@ -886,7 +896,7 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
 
         # Phase 1: Review
         log("Phase 1: Review")
-        review = phase_1_review(workspace)
+        review = phase_1_review(workspace, skill_path)
         log(f"  {review['iterations']} iters, {review['keeps']} keeps, stuck={review['stuck']}")
 
         # Phase 2+3: Ideate and Modify (via claude -p)
