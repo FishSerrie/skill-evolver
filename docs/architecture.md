@@ -1,3 +1,7 @@
+[English](../README.md) · [中文](README_CN.md) · **技术架构** · [Architecture (EN)](architecture.en.md)
+
+---
+
 # Skill Evolver 技术架构
 
 > 发布版本：v1.0

@@ -12,7 +12,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://python.org)
 
-[English](README.md) · [中文](docs/README_CN.md) · [Architecture](docs/architecture.en.md)
+**English** · [中文](docs/README_CN.md) · [Architecture](docs/architecture.en.md)
 
 </div>
 
