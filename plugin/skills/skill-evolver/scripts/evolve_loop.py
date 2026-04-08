@@ -52,28 +52,63 @@ def phase_0_setup(skill_path: Path, gt_path: Path,
     from setup_workspace import setup_workspace  # noqa: sibling import
     from common import setup_creator_config
 
-    # Precondition: skill dir must be a git repo AND have a clean working
-    # tree. If it's not a git repo, phase_4_commit can't commit anything
-    # anyway; if it's dirty, we would silently co-opt the user's work.
+    # Precondition: skill dir must be under git AND have a clean working
+    # tree. Four-step decision tree mirrors evolve_protocol.md Phase 4:
+    #   1. Already under git, clean → proceed
+    #   2. Already under git, dirty → refuse (would co-opt user's work)
+    #   3. Not under git, git installed → auto-init + initial commit
+    #   4. Git not installed → refuse with install instructions
     try:
         status = subprocess.run(
             ["git", "status", "--porcelain"],
             cwd=str(skill_path), capture_output=True, text=True, timeout=10,
         )
+    except FileNotFoundError as e:
+        raise RuntimeError(
+            f"Phase 0: git is not installed. Install git and retry:\n"
+            f"  macOS:  brew install git  or  xcode-select --install\n"
+            f"  Ubuntu: sudo apt-get install git\n"
+            f"  CentOS: sudo yum install git\n"
+            f"  Windows: https://git-scm.com/download/win"
+        ) from e
     except (subprocess.TimeoutExpired, OSError) as e:
         raise RuntimeError(f"Phase 0: cannot run `git status` in {skill_path}: {e}") from e
+
     if status.returncode != 0:
-        raise RuntimeError(
-            f"Phase 0: {skill_path} is not a git repo. Run `git init` first "
-            f"(see evolve_protocol.md Phase 4 Step 2)."
-        )
-    if status.stdout.strip():
+        # Not a git repo. Auto-init per protocol (step 3): git is
+        # installed (we just ran it successfully enough to get a
+        # non-zero exit), the user has authorized operating on this
+        # skill dir, and no prior commit means no user work to lose.
+        try:
+            subprocess.run(
+                ["git", "init"], cwd=str(skill_path),
+                capture_output=True, text=True, timeout=10, check=True,
+            )
+            subprocess.run(
+                ["git", "add", "."], cwd=str(skill_path),
+                capture_output=True, text=True, timeout=10, check=True,
+            )
+            subprocess.run(
+                ["git", "commit", "-m", "chore: init git for evolve tracking"],
+                cwd=str(skill_path), capture_output=True, text=True,
+                timeout=10, check=True,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
+            raise RuntimeError(
+                f"Phase 0: auto-init failed in {skill_path}: {e}\n"
+                f"Run manually: git init && git add . && git commit -m 'init'"
+            ) from e
+    elif status.stdout.strip():
+        # Already a git repo AND dirty → refuse. phase_4_commit's
+        # `git add -u` would pull tracked-file dirt into the first
+        # experiment commit, and a discarded iteration's `git revert`
+        # would silently delete the user's work.
         raise RuntimeError(
             f"Phase 0: {skill_path} has uncommitted changes. Commit or stash "
-            f"them before running evolve — otherwise `git add -A` in "
-            f"phase_4_commit would sweep them into the first experiment "
-            f"commit, and a discarded iteration would silently revert "
-            f"your work.\n\n"
+            f"them before running evolve — otherwise `git add -u` in "
+            f"phase_4_commit would sweep tracked-file changes into the "
+            f"first experiment commit, and a discarded iteration would "
+            f"silently revert your work.\n\n"
             f"Dirty files:\n{status.stdout}"
         )
 
