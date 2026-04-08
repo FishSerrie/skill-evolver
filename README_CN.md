@@ -99,11 +99,27 @@ Phase 1: 回顾    →  读取记忆（results.tsv + experiments.jsonl + git log
 Phase 2: 构思    →  分析失败模式，决定改什么
 Phase 3: 修改    →  对 skill 做一个原子改动
 Phase 4: 提交    →  Git commit
-Phase 5: 验证    →  快速门控（秒级）+ 开发集评测（分钟级）
+Phase 5: 验证    →  三层测评流水线（Quick Gate / Dev Eval / Strict Eval）
 Phase 6: 门控    →  多维度门控决策：保留 / 丢弃 / 回滚
 Phase 7: 记录    →  写入实验记忆
 Phase 8: 循环    →  继续、升层、或停止
 ```
+
+### 三层测评（Phase 5 详解）
+
+Phase 5 不是单次评测，是一个三层流水线——便宜的层每轮都跑，贵的层只在必要时跑。
+
+**名称对照——L1 / L2 / L3 和 Quick Gate / Dev Eval / Strict Eval 指的是同一个东西。** `L*` 标签来自脚本文件名（`run_l1_gate.py`、`run_l2_eval.py`），代码和协议里都是这个叫法；`Quick Gate / Dev Eval / Strict Eval` 是文档里的概念名。两套叫法完全对应，哪个读起来更清楚就用哪个。
+
+| 标签 | 又叫 | 检查什么 | 速度 | 什么时候跑 | 脚本 |
+|---|---|---|---|---|---|
+| **L1** | **Quick Gate** | YAML frontmatter 语法、SKILL.md 有正文、目录结构、Creator 的 `quick_validate.py`、GT 文件结构（prompt + assertions 齐全） | **秒级** | **每轮必跑** — 门卫。失败直接跳到 discard，L2 不跑 | `scripts/run_l1_gate.py` |
+| **L2** | **Dev Eval** | 所有 `dev` split GT case 逐条断言打分。6 个纯程序类型（`contains` / `not_contains` / `regex` / `file_exists` / `json_schema` / `script_check`）由 Python 代码评分；2 个语义类型（`path_hit` / `fact_coverage`）由 `BinaryLLMJudge` 评分——LLM 只答 YES/NO，程序汇总。结果：`pass_rate = 通过断言数 / 总断言数` | **分钟级** | **每轮跑**（或 `evolve_plan.md` 指定的频率）— Phase 6 门控决策的主信号 | `scripts/run_l2_eval.py` + `scripts/evaluators.py` |
+| **L3** | **Strict Eval** | `holdout` split（过拟合检测，**绝不暴露给 proposer**，Anti-Goodhart 原则）+ `regression` split（防止已有能力被改坏）+ 可选的盲评 A/B 对比（读 Creator 的 `agents/comparator.md`） | **~10 分钟** | **条件触发** — 由 `evolve_plan.md` 定义：每 N 轮 / dev pass_rate 超过阈值 / layer 晋升前。不是每轮都跑 | 没有专用脚本 — Claude 复用 `run_l2_eval.py` + 换 split（`holdout` / `regression`）编排 |
+
+**Fail-fast 原则**：L1（Quick Gate）失败就直接 discard，L2（Dev Eval）根本不会跑。烂改动的成本被压到最低。
+
+**自适应阈值**：样本数、各层频率、重点断言类型、通过阈值**全部 per-skill**，不写死。都在 `<workspace>/evolve/evolve_plan.md` 里，由 Claude 在 Phase 0 根据 skill 类型、GT 数据量、assertion 分布生成。客服 QA skill 的阈值和代码生成 skill 的阈值是不一样的。模板见 `references/eval_strategy.md`。
 
 ### 四层架构
 

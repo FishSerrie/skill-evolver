@@ -187,11 +187,27 @@ Phase 1: Review   → Read memory + execution traces (Meta-Harness)
 Phase 2: Ideate   → Diagnose failures from traces, propose atomic change
 Phase 3: Modify   → Apply ONE change to the skill
 Phase 4: Commit   → Git commit (before verification — preserves audit trail)
-Phase 5: Verify   → Quick gate (seconds) + full eval (minutes)
+Phase 5: Verify   → Three-tier evaluation (Quick Gate + Dev Eval + Strict Eval)
 Phase 6: Gate     → 5-way AND: quality + trigger + cost + latency + regression
 Phase 7: Log      → Write results.tsv + experiments.jsonl + traces
 Phase 8: Loop     → Continue, promote layer, or stop
 ```
+
+### Three-Tier Evaluation (Phase 5 in detail)
+
+Phase 5 is not a single eval pass. It is a three-tier pipeline — cheaper tiers run every iteration, expensive tiers run only when warranted.
+
+**Naming map — L1 / L2 / L3 are the same thing as Quick Gate / Dev Eval / Strict Eval.** The `L*` labels come from the script filenames (`run_l1_gate.py`, `run_l2_eval.py`) and still appear throughout the codebase and protocol. The `Quick Gate / Dev Eval / Strict Eval` names are the conceptual names used in docs. Both names refer to the exact same thing — we just use whichever reads more clearly in context.
+
+| Label | Also called | What it checks | Speed | When it runs | Script |
+|---|---|---|---|---|---|
+| **L1** | **Quick Gate** | YAML frontmatter syntax, SKILL.md body non-empty, directory structure, Creator's `quick_validate.py`, GT file structure (prompt + assertions present) | **Seconds** | **Every iteration** — the gatekeeper. If it fails, Phase 5 skips directly to discard; Dev Eval is not run. | `scripts/run_l1_gate.py` |
+| **L2** | **Dev Eval** | All `dev`-split GT cases graded assertion-by-assertion. 6 program-only types (`contains` / `not_contains` / `regex` / `file_exists` / `json_schema` / `script_check`) are scored by Python code. 2 semantic types (`path_hit` / `fact_coverage`) are scored by `BinaryLLMJudge` — the LLM answers YES/NO only, the program sums up. Result: `pass_rate = passed_assertions / total_assertions`. | **Minutes** | **Every iteration** (or every N, configured by `evolve_plan.md`) — the main signal driving the Phase 6 gate decision. | `scripts/run_l2_eval.py` + `scripts/evaluators.py` |
+| **L3** | **Strict Eval** | `holdout` split (overfitting detection — **never shown to the proposer**, Anti-Goodhart principle) + `regression` split (ensures no existing capability was broken) + optional blind A/B comparison via Creator's `agents/comparator.md`. | **~10 minutes** | **Conditional** — triggered by `evolve_plan.md` rules: every N iterations / when dev pass_rate exceeds a threshold / before a layer promotion. Not every iteration. | No dedicated script — Claude orchestrates `run_l2_eval.py` with a different split (`holdout` / `regression`). |
+
+**Fail-fast principle:** if L1 (Quick Gate) fails, the iteration is a discard and Phase 6 runs immediately — L2 (Dev Eval) never runs for a broken skill. This keeps bad iterations cheap.
+
+**Adaptive thresholds:** sample sizes, tier frequencies, focus areas, and pass thresholds are all **per-skill**, not hardcoded. They live in `<workspace>/evolve/evolve_plan.md`, which Claude generates during Phase 0 by analyzing skill type, GT volume, and assertion distribution. A customer-service QA skill gets different thresholds than a code-generation skill. See `references/eval_strategy.md` for the templates.
 
 ### Layered Mutation Strategy
 

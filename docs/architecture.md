@@ -178,11 +178,21 @@ Phase 1: Review   → 读 memory                        [自动: phase_1_review(
 Phase 2: Ideate   → 分析失败，决定改什么               [Claude 推理]
 Phase 3: Modify   → 做一个原子改动                     [Claude 执行]
 Phase 4: Commit   → git commit                        [自动: phase_4_commit()]
-Phase 5: Verify   → Quick Gate + Dev Eval             [自动L1 + Claude编排L2]
+Phase 5: Verify   → 三层测评（Quick Gate → Dev Eval → 条件触发 Strict Eval）
 Phase 6: Gate     → 多门控 keep/discard/revert         [自动: phase_6_gate_decision()]
 Phase 7: Log      → 写 results.tsv + experiments.jsonl [自动: phase_7_log()]
 Phase 8: Loop     → 继续/升层/结束                     [自动: phase_8_loop_control()]
 ```
+
+### Phase 5 三层测评（L1/L2/L3 ≡ Quick Gate/Dev Eval/Strict Eval）
+
+> L1/L2/L3 是脚本文件名的历史命名（`run_l1_gate.py`、`run_l2_eval.py`）；Quick Gate / Dev Eval / Strict Eval 是文档里的概念名。两套叫法指向**完全相同**的东西。
+
+| 标签 | 别名 | 作用 | 速度 | 频率 | 实现 |
+|---|---|---|---|---|---|
+| **L1** | Quick Gate | 语法/结构/Creator `quick_validate` 秒级门卫 | 秒级 | 每轮必跑 | `run_l1_gate.py` |
+| **L2** | Dev Eval | dev split 逐条断言打分（程序 + BinaryLLMJudge） | 分钟级 | 每轮 / 按 plan 频率 | `run_l2_eval.py` + `evaluators.py` |
+| **L3** | Strict Eval | holdout + regression + 可选盲评 A/B | ~10 分钟 | 条件触发（按 plan） | 复用 `run_l2_eval.py` + 换 split |
 
 ### 自动化程度
 
@@ -193,8 +203,9 @@ Phase 8: Loop     → 继续/升层/结束                     [自动: phase_8_
 | 2 Ideate | ❌ Claude 推理 | `evolve_loop.phase_2_prepare_ideation()` 准备上下文 |
 | 3 Modify | ❌ Claude 执行 | — |
 | 4 Commit | ✅ 全自动 | `evolve_loop.phase_4_commit()` |
-| 5 L1 Gate | ✅ 全自动 | `run_l1_gate.py` |
-| 5 L2 Eval | ⚠️ Claude 编排 | `run_l2_eval.py` 提供辅助函数 |
+| 5 L1 / Quick Gate | ✅ 全自动 | `run_l1_gate.py` |
+| 5 L2 / Dev Eval | ⚠️ Claude 编排 | `run_l2_eval.py` + `evaluators.py` |
+| 5 L3 / Strict Eval | ⚠️ Claude 编排（条件触发） | 复用 L2 脚本 + 不同 split |
 | 6 Gate | ✅ 全自动 | `evolve_loop.phase_6_gate_decision()` |
 | 7 Log | ✅ 全自动 | `evolve_loop.phase_7_log()` |
 | 8 Loop | ✅ 全自动 | `evolve_loop.phase_8_loop_control()` |

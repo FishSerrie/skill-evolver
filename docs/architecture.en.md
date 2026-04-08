@@ -230,11 +230,21 @@ Phase 1: Review   -> Read memory                        [auto: phase_1_review()]
 Phase 2: Ideate   -> Diagnose failures, decide mutation  [Claude reasoning]
 Phase 3: Modify   -> Apply one atomic change             [Claude execution]
 Phase 4: Commit   -> git commit                          [auto: phase_4_commit()]
-Phase 5: Verify   -> Quick Gate + Dev Eval               [auto L1 + Claude-orchestrated L2]
+Phase 5: Verify   -> Three-tier evaluation (Quick Gate -> Dev Eval -> conditional Strict Eval)
 Phase 6: Gate     -> Multi-gate keep/discard/revert      [auto: phase_6_gate_decision()]
 Phase 7: Log      -> Write results.tsv + experiments.jsonl [auto: phase_7_log()]
 Phase 8: Loop     -> Continue / escalate layer / stop    [auto: phase_8_loop_control()]
 ```
+
+### Phase 5 Three-Tier Evaluation (L1/L2/L3 ≡ Quick Gate/Dev Eval/Strict Eval)
+
+> L1 / L2 / L3 are historical script names (`run_l1_gate.py`, `run_l2_eval.py`); Quick Gate / Dev Eval / Strict Eval are the conceptual names used in docs. Both name sets refer to the **exact same thing**.
+
+| Label | Also called | Purpose | Speed | Frequency | Implementation |
+|---|---|---|---|---|---|
+| **L1** | Quick Gate | Syntax / structure / Creator `quick_validate` fast gatekeeper | Seconds | Every iteration | `run_l1_gate.py` |
+| **L2** | Dev Eval | Grade each dev-split case assertion-by-assertion (program + BinaryLLMJudge) | Minutes | Every iteration (or plan-defined cadence) | `run_l2_eval.py` + `evaluators.py` |
+| **L3** | Strict Eval | Holdout + regression + optional blind A/B | ~10 minutes | Conditional (plan-triggered) | Reuses `run_l2_eval.py` with a different split |
 
 ### 6a. Active Diagnosis Protocol (Phases 1 and 2)
 
@@ -257,10 +267,11 @@ The protocol is enforced in code: `phase_2_prepare_ideation()` injects trace con
 | 0 Setup | Fully auto | `setup_workspace.py` |
 | 1 Review | Fully auto | `evolve_loop.phase_1_review()` |
 | 2 Ideate | Claude reasoning | `evolve_loop.phase_2_prepare_ideation()` prepares context |
-| 3 Modify | Claude execution | -- |
+| 3 Modify | Claude execution | — |
 | 4 Commit | Fully auto | `evolve_loop.phase_4_commit()` |
-| 5 L1 Gate | Fully auto | `run_l1_gate.py` |
-| 5 L2 Eval | Claude-orchestrated | `run_l2_eval.py` provides helper functions |
+| 5 L1 / Quick Gate | Fully auto | `run_l1_gate.py` |
+| 5 L2 / Dev Eval | Claude-orchestrated | `run_l2_eval.py` + `evaluators.py` |
+| 5 L3 / Strict Eval | Claude-orchestrated (conditional) | Reuses L2 scripts with a different split |
 | 6 Gate | Fully auto | `evolve_loop.phase_6_gate_decision()` |
 | 7 Log | Fully auto | `evolve_loop.phase_7_log()` |
 | 8 Loop | Fully auto | `evolve_loop.phase_8_loop_control()` |
