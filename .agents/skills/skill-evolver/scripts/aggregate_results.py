@@ -182,11 +182,11 @@ def run_benchmark(skill_a: Path, skill_b: Path, gt_path: Path,
     print(f"[benchmark] Evaluating skill B: {skill_b}", file=sys.stderr)
     result_b = evaluator.full_eval(skill_b, gt_path, split=split)
 
-    # Build per-case comparison from failed lists
-    failed_a_ids = {f["case_id"] for f in result_a.get("failed", [])}
-    failed_b_ids = {f["case_id"] for f in result_b.get("failed", [])}
+    # Build per-case comparison from failed lists (normalize to str)
+    failed_a_ids = {str(f["case_id"]) for f in result_a.get("failed", [])}
+    failed_b_ids = {str(f["case_id"]) for f in result_b.get("failed", [])}
 
-    # Collect all case IDs from traces (traces keys are case IDs)
+    # Collect all case IDs from traces (traces keys are str)
     all_case_ids = sorted(
         set(result_a.get("traces", {}).keys())
         | set(result_b.get("traces", {}).keys())
@@ -195,8 +195,8 @@ def run_benchmark(skill_a: Path, skill_b: Path, gt_path: Path,
 
     per_case = []
     for cid in all_case_ids:
-        a_pass = cid not in failed_a_ids
-        b_pass = cid not in failed_b_ids
+        a_pass = str(cid) not in failed_a_ids
+        b_pass = str(cid) not in failed_b_ids
         per_case.append({
             "case_id": cid,
             "a_pass": a_pass,

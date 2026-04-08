@@ -1,9 +1,9 @@
 ---
 name: skill-evolver
-description: "Skill 自动进化引擎 — 基于 skill-creator 评测能力 + autoresearch 自主迭代思想，自动创建、评测、迭代优化 skill。内核：Creator 做评测打分，AutoResearch 式循环做搜索优化，Evolver 加门控和记忆实现全自动进化。支持 evolve/eval/create/benchmark/improve 五种模式。Triggers on: '/skill-evolver', 'evolve skill', '进化 skill', '优化 skill', 'skill 评测', 'eval skill', 'skill benchmark', '让 skill 变强', '自动优化', 'improve skill', '改进 skill', 'create skill', '创建 skill', 'skill evolver'."
+description: "Automatic skill evolution engine — powered by skill-creator's evaluation capabilities + autoresearch's autonomous iteration methodology. Core: Creator handles evaluation and grading, AutoResearch-style loop handles search and optimization, Evolver adds gating and memory for fully automatic evolution. Supports evolve/eval/create/benchmark/improve modes. Triggers on: '/skill-evolver', 'evolve skill', 'optimize skill', 'skill eval', 'skill benchmark', 'make skill better', 'auto-optimize', 'improve skill', 'create skill', 'skill evolver', '进化 skill', '优化 skill', 'skill 评测', '让 skill 变强', '自动优化', '改进 skill', '创建 skill'."
 ---
 
-# Skill Evolver (Codex)
+# Skill Evolver
 
 A unified skill optimizer centered on ground-truth data, powered by Creator for evaluation and AutoResearch for search.
 
@@ -14,19 +14,19 @@ A unified skill optimizer centered on ground-truth data, powered by Creator for 
 python3 scripts/evolve_loop.py ./my-skill/ --gt ./evals.json --run --max-iterations 20
 
 # Evaluate an existing skill
-$skill-evolver eval ./my-skill/ --gt ./evals.json
+/skill-evolver eval ./my-skill/ --gt ./evals.json
 
 # Create a new skill from scratch
-$skill-evolver create
+/skill-evolver create
 
 # Compare two versions
-$skill-evolver benchmark ./skill-v1/ ./skill-v2/ --gt ./evals.json
+/skill-evolver benchmark ./skill-v1/ ./skill-v2/ --gt ./evals.json
 ```
 
 **Prerequisites:**
 - GT data (test cases + assertions) should be prepared in advance; if unavailable, evolve mode auto-generates them via Creator
 - The skill directory **must be under git** (if uninitialized, Phase 0 forces `git init`; if git is not installed, install it first)
-- skill-creator is installed (provides evaluation capabilities)
+- **skill-creator installed (hard dependency)** — Evolver refuses to start without it and shows installation instructions. See `references/creator_integration.md` Section 3 for path discovery and custom-path options (`$SKILL_CREATOR_PATH` env var or `--creator-path` CLI flag)
 
 ---
 
@@ -49,7 +49,7 @@ $skill-evolver benchmark ./skill-v1/ ./skill-v2/ --gt ./evals.json
 - When Creator updates, Evolver benefits automatically
 - See `references/creator_integration.md` for details
 
-**Creator path discovery order:** See Section 3 of `references/creator_integration.md`. Multiple locations are searched in priority order; fallback / graceful degradation applies when none are found.
+**Creator path discovery order:** See Section 3 of `references/creator_integration.md`. Multiple locations are searched in priority order. If none are found, Evolver errors out with installation instructions — there is no silent degradation.
 
 ---
 
@@ -57,13 +57,13 @@ $skill-evolver benchmark ./skill-v1/ ./skill-v2/ --gt ./evals.json
 
 | Mode | Trigger | Responsibility | Calls Creator? |
 |---|---|---|---|
-| **Create** | `$skill-evolver create` | Generate an initial skill from requirements + GT | Yes: reads Creator's creation workflow |
-| **Eval** | `$skill-evolver eval` | Single evaluation pass, produces a benchmark | Yes: calls Creator's run_eval |
-| **Improve** | `$skill-evolver improve` | Human-directed targeted improvement | Yes: follows Creator's iteration workflow |
-| **Benchmark** | `$skill-evolver benchmark` | Systematic comparison (A/B, blind review) | Yes: calls Creator's comparator/analyzer |
-| **Evolve** | `$skill-evolver evolve` | Automated iterative optimization (core) | Partial: evaluation via Creator; search/gating/memory are Evolver's own |
+| **Create** | `/skill-evolver create` | Generate an initial skill from requirements + GT | Yes: reads Creator's creation workflow |
+| **Eval** | `/skill-evolver eval` | Single evaluation pass, produces a benchmark | Yes: calls Creator's run_eval |
+| **Improve** | `/skill-evolver improve` | Human-directed targeted improvement | Yes: follows Creator's iteration workflow |
+| **Benchmark** | `/skill-evolver benchmark` | Systematic comparison (A/B, blind review) | Yes: calls Creator's comparator/analyzer |
+| **Evolve** | `/skill-evolver evolve` | Automated iterative optimization (core) | Partial: evaluation via Creator; search/gating/memory are Evolver's own |
 
-Pipeline is a run mode: `$skill-evolver pipeline --mode create+eval+evolve`
+Pipeline is a run mode: `/skill-evolver pipeline --mode create+eval+evolve`
 
 ---
 
@@ -145,7 +145,7 @@ Run a single standalone evaluation against a skill, producing a quality report. 
 
 **Usage:**
 ```
-$skill-evolver eval <skill-path> [--gt <gt-data-path>]
+/skill-evolver eval <skill-path> [--gt <gt-data-path>]
 ```
 
 **Workflow:**
@@ -179,7 +179,7 @@ Systematic comparison of two versions.
 
 **Usage:**
 ```
-$skill-evolver benchmark <skill-v1> <skill-v2> --gt <gt-data>
+/skill-evolver benchmark <skill-v1> <skill-v2> --gt <gt-data>
 ```
 
 **Workflow:**
@@ -195,7 +195,7 @@ Automated iterative optimization. The core value of Evolver.
 
 **Usage:**
 ```
-$skill-evolver evolve <skill-path>
+/skill-evolver evolve <skill-path>
 ```
 The user might say "optimize this skill" and provide a path, or "here's some test data" with a file. GT data is not a required argument — if missing, Evolver calls Creator to generate it automatically.
 
@@ -257,7 +257,7 @@ For unattended background execution (outside a conversation), use CLI mode:
 ```bash
 python3 scripts/evolve_loop.py <skill-path> --gt <gt-json> --run --max-iterations 20
 ```
-This uses the Codex CLI subprocesses for LLM reasoning. But **the default scenario is you executing the loop directly in conversation**.
+This uses `claude -p` subprocesses for LLM reasoning. But **the default scenario is you executing the loop directly in conversation**.
 
 Cleanup intermediate artifacts:
 ```bash

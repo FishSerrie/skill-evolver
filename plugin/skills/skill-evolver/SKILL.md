@@ -1,6 +1,6 @@
 ---
 name: skill-evolver
-description: "Skill 自动进化引擎 — 基于 skill-creator 评测能力 + autoresearch 自主迭代思想，自动创建、评测、迭代优化 skill。内核：Creator 做评测打分，AutoResearch 式循环做搜索优化，Evolver 加门控和记忆实现全自动进化。支持 evolve/eval/create/benchmark/improve 五种模式。Triggers on: '/skill-evolver', 'evolve skill', '进化 skill', '优化 skill', 'skill 评测', 'eval skill', 'skill benchmark', '让 skill 变强', '自动优化', 'improve skill', '改进 skill', 'create skill', '创建 skill', 'skill evolver'."
+description: "Automatic skill evolution engine — powered by skill-creator's evaluation capabilities + autoresearch's autonomous iteration methodology. Core: Creator handles evaluation and grading, AutoResearch-style loop handles search and optimization, Evolver adds gating and memory for fully automatic evolution. Supports evolve/eval/create/benchmark/improve modes. Triggers on: '/skill-evolver', 'evolve skill', 'optimize skill', 'skill eval', 'skill benchmark', 'make skill better', 'auto-optimize', 'improve skill', 'create skill', 'skill evolver', '进化 skill', '优化 skill', 'skill 评测', '让 skill 变强', '自动优化', '改进 skill', '创建 skill'."
 ---
 
 # Skill Evolver
@@ -26,7 +26,7 @@ python3 scripts/evolve_loop.py ./my-skill/ --gt ./evals.json --run --max-iterati
 **Prerequisites:**
 - GT data (test cases + assertions) should be prepared in advance; if unavailable, evolve mode auto-generates them via Creator
 - The skill directory **must be under git** (if uninitialized, Phase 0 forces `git init`; if git is not installed, install it first)
-- skill-creator is installed (provides evaluation capabilities)
+- **skill-creator installed (hard dependency)** — Evolver refuses to start without it and shows installation instructions. See `references/creator_integration.md` Section 3 for path discovery and custom-path options (`$SKILL_CREATOR_PATH` env var or `--creator-path` CLI flag)
 
 ---
 
@@ -49,7 +49,7 @@ python3 scripts/evolve_loop.py ./my-skill/ --gt ./evals.json --run --max-iterati
 - When Creator updates, Evolver benefits automatically
 - See `references/creator_integration.md` for details
 
-**Creator path discovery order:** See Section 3 of `references/creator_integration.md`. Multiple locations are searched in priority order; fallback / graceful degradation applies when none are found.
+**Creator path discovery order:** See Section 3 of `references/creator_integration.md`. Multiple locations are searched in priority order. If none are found, Evolver errors out with installation instructions — there is no silent degradation.
 
 ---
 

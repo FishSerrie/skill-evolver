@@ -12,7 +12,7 @@ Usage:
     python evolve_loop.py <skill-path> --cleanup
 
 This script runs the complete 8-phase evolve cycle. Phase 2 (Ideate) and
-Phase 3 (Modify) use `codex -q` subprocess to invoke LLM reasoning.
+Phase 3 (Modify) use `claude -p` subprocess to invoke LLM reasoning.
 """
 
 import json
@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from common import find_creator_path, find_workspace, find_evolve_dir, validate_frontmatter, parse_skill_md
+from common import require_creator, CreatorNotFoundError, find_workspace, find_evolve_dir, validate_frontmatter, parse_skill_md
 from aggregate_results import parse_results_tsv, calculate_summary
 from evaluators import get_evaluator, parse_evaluator_from_plan, Evaluator
 
@@ -475,7 +475,7 @@ def save_best_version(skill_path: Path, workspace: Path, iteration: int) -> str:
 # Backend registry: name → (command_template, env_filter)
 LLM_BACKENDS = {
     "claude": {
-        "cmd": ["codex", "-q", "{prompt}", "--output-format", "text"],
+        "cmd": ["claude", "-p", "{prompt}", "--output-format", "text"],
         "model_flag": "--model",
         "env_filter": lambda env: {k: v for k, v in env.items() if k != "CLAUDECODE"},
     },
@@ -596,7 +596,7 @@ def phase_2_3_ideate_and_modify(skill_path: Path, workspace: Path,
                                 review: dict, gt_path: Path,
                                 current_layer: str = "body",
                                 model: str | None = None) -> dict:
-    """Phase 2+3: Use codex -q to analyze failures and make an atomic change.
+    """Phase 2+3: Use claude -p to analyze failures and make an atomic change.
 
     Returns: {"changed": bool, "description": str, "mutation_type": str}
     """
@@ -667,7 +667,7 @@ If you find nothing to improve, output:
 
 def run_l2_eval_via_claude(skill_path: Path, gt_path: Path,
                            workspace: Path, model: str | None = None) -> dict:
-    """Phase 5 L2: Use codex -q to evaluate skill against GT cases.
+    """Phase 5 L2: Use claude -p to evaluate skill against GT cases.
 
     Returns: {"pass_rate": float, "total_passed": int, "total_assertions": int, ...}
     """
@@ -700,7 +700,7 @@ Output EXACTLY this JSON format on the last line (no other text after it):
 
 
 def _local_eval(skill_path: Path, gt_path: Path) -> dict:
-    """Fallback local eval when codex -q is unavailable."""
+    """Fallback local eval when claude -p is unavailable."""
     skill_content = (skill_path / "SKILL.md").read_text()
     gt_data = json.loads(gt_path.read_text())
     dev_cases = [c for c in gt_data.get("evals", []) if c.get("split", "dev") == "dev"]
@@ -740,7 +740,7 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
                     evaluator: Evaluator | None = None) -> dict:
     """Run the complete 8-phase evolve loop.
 
-    This is the REAL auto loop. Phase 2+3 use codex -q for LLM reasoning.
+    This is the REAL auto loop. Phase 2+3 use claude -p for LLM reasoning.
     Evaluation uses the pluggable Evaluator interface.
 
     Args:
@@ -767,6 +767,11 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
     log(f"Max iterations: {max_iterations}")
     log(f"Evaluator: {evaluator.info()}")
     log("=" * 60)
+
+    # Creator dependency check (fail fast)
+    log("Checking skill-creator dependency...")
+    creator_path = require_creator()
+    log(f"Creator found: {creator_path}")
 
     # Phase 0: Setup
     log("Phase 0: Setup")
@@ -803,8 +808,8 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
         review = phase_1_review(workspace)
         log(f"  {review['iterations']} iters, {review['keeps']} keeps, stuck={review['stuck']}")
 
-        # Phase 2+3: Ideate and Modify (via codex -q)
-        log("Phase 2+3: Ideate and Modify (calling codex -q)")
+        # Phase 2+3: Ideate and Modify (via claude -p)
+        log("Phase 2+3: Ideate and Modify (calling claude -p)")
         result_23 = phase_2_3_ideate_and_modify(
             skill_path, workspace, review, gt_path, current_layer, model)
         log(f"  Result: changed={result_23['changed']}, {result_23['description']}")
@@ -936,9 +941,7 @@ def _try_launch_eval_viewer(workspace: Path, skill_path: Path) -> bool:
     Generates a static HTML review of the evolution results.
     Returns True if viewer was launched successfully.
     """
-    creator_path = find_creator_path()
-    if not creator_path:
-        return False
+    creator_path = require_creator()
 
     viewer_script = creator_path / "eval-viewer" / "generate_review.py"
     if not viewer_script.exists():
@@ -1192,8 +1195,14 @@ def main():
     parser.add_argument("--info", action="store_true")
     parser.add_argument("--cleanup", action="store_true")
     parser.add_argument("--cleanup-versions", action="store_true")
+    parser.add_argument("--creator-path", type=Path, default=None,
+                        help="Path to skill-creator installation (overrides auto-discovery)")
     parser.add_argument("--verbose", action="store_true", default=True)
     args = parser.parse_args()
+
+    # Set creator path override via env var (picked up by require_creator())
+    if args.creator_path:
+        os.environ["SKILL_CREATOR_PATH"] = str(args.creator_path.resolve())
 
     ws = args.workspace or find_workspace(args.skill_path)
 
@@ -1262,6 +1271,14 @@ def main():
     evaluator_instance = None
     if eval_config.get("evaluator"):
         evaluator_instance = get_evaluator(eval_config)
+
+    # Verify creator is available before doing any real work
+    try:
+        creator = require_creator()
+        print(f"skill-creator found: {creator}", file=sys.stderr)
+    except CreatorNotFoundError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(2)
 
     if args.run:
         # THE REAL LOOP

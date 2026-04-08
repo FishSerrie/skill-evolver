@@ -82,13 +82,19 @@ Calls Creator's scripts and agents:
 
 #### 2.5 Grading
 
-Evolver's own `agents/grader_agent.md` and `agents/comparator_agent.md` serve as quick references. At runtime, Creator's full versions are preferred:
+Evolver's `agents/grader_agent.md` and `agents/comparator_agent.md` are pointer files that contain no grading logic. At runtime they redirect to Creator's full versions:
 
+```python
+from common import get_creator_agent_path
+
+# For grading, read Creator's grader
+grader_content = get_creator_agent_path("grader.md").read_text()
+
+# For comparison, read Creator's comparator
+comparator_content = get_creator_agent_path("comparator.md").read_text()
 ```
-# When grading is needed:
-# 1. Prefer skill-creator's agents/grader.md (latest full version)
-# 2. If Creator unavailable, fall back to Evolver's agents/grader_agent.md
-```
+
+There is no fallback path. Creator is a hard dependency.
 
 ---
 
@@ -111,10 +117,16 @@ CREATOR_SEARCH_PATHS = [
 ]
 ```
 
-If Creator is not found:
-- Create/Improve/Benchmark modes fall back to Evolver's built-in simplified versions
-- Evolve mode's core loop is unaffected (Search/Modify/Gate/Memory are Evolver's own capabilities)
-- User is prompted to install Creator for full capabilities
+**If Creator is not found → Evolver errors out with installation instructions. There is no silent degradation.**
+
+```python
+from common import require_creator
+creator = require_creator()  # Raises CreatorNotFoundError with install guidance if not found
+```
+
+Users can specify a custom path via:
+- Environment variable: `export SKILL_CREATOR_PATH=/custom/path`
+- CLI argument: `--creator-path /custom/path` (evolve_loop.py only)
 
 ---
 

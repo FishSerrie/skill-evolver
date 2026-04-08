@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent))
-from common import find_creator_path, validate_frontmatter
+from common import require_creator, find_creator_path, validate_frontmatter
 
 
 # ─────────────────────────────────────────────

@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from common import find_creator_path, find_evolve_dir
+from common import require_creator, find_evolve_dir
 
 
 def load_gt(gt_path: Path, split: str | None = "dev") -> list[dict]:

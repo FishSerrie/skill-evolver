@@ -1,9 +1,88 @@
 #!/usr/bin/env python3
 """Shared utilities for skill-evolver scripts."""
 
+import os
 import re
 import sys
 from pathlib import Path
+
+
+class CreatorNotFoundError(Exception):
+    """Raised when skill-creator is not installed."""
+    pass
+
+
+_cached_creator_path: Path | None = None
+_creator_path_resolved: bool = False
+
+
+def require_creator() -> Path:
+    """Find and return the skill-creator path, or raise with installation guidance.
+
+    Caches the result after first successful resolution.
+    """
+    global _cached_creator_path, _creator_path_resolved
+
+    if _creator_path_resolved:
+        if _cached_creator_path is not None:
+            return _cached_creator_path
+        _raise_creator_not_found()
+
+    path = find_creator_path()
+    _creator_path_resolved = True
+
+    if path is None:
+        _raise_creator_not_found()
+
+    _cached_creator_path = path
+    return path
+
+
+def _raise_creator_not_found() -> None:
+    """Raise CreatorNotFoundError with installation guidance."""
+    env_val = os.environ.get("SKILL_CREATOR_PATH", "not set")
+    msg = f"""
+skill-creator is REQUIRED but was not found.
+
+skill-evolver depends on skill-creator for evaluation, grading, and
+comparison capabilities. Without it, evolver cannot function.
+
+How to install:
+  1. Plugin marketplace (recommended):
+     In Claude Code, run: /install skill-creator
+
+  2. Manual install from GitHub:
+     git clone https://github.com/anthropics/skills.git /tmp/anthropic-skills-latest
+     cp -r /tmp/anthropic-skills-latest/skills/skill-creator ~/.claude/skills/skill-creator
+
+     Source: https://github.com/anthropics/skills/tree/main/skills/skill-creator
+
+  3. Already installed at a custom path?
+     export SKILL_CREATOR_PATH=/your/path/to/skill-creator
+
+Searched:
+  - $SKILL_CREATOR_PATH ({env_val})
+  - ~/.claude/plugins/marketplaces/*/plugins/skill-creator/
+  - ~/.claude/skills/skill-creator/
+  - .claude/skills/skill-creator/
+""".strip()
+    raise CreatorNotFoundError(msg)
+
+
+def get_creator_agent_path(agent_name: str) -> Path:
+    """Return the path to a creator agent file (e.g., 'grader.md').
+
+    Raises CreatorNotFoundError if creator is not installed.
+    Raises FileNotFoundError if the agent file doesn't exist.
+    """
+    creator = require_creator()
+    agent_path = creator / "agents" / agent_name
+    if not agent_path.exists():
+        raise FileNotFoundError(
+            f"Creator agent '{agent_name}' not found at {agent_path}. "
+            f"Your skill-creator installation may be outdated."
+        )
+    return agent_path
 
 
 def find_any_creator(verbose: bool = False) -> tuple[Path | None, str]:
@@ -146,6 +225,15 @@ def find_creator_path(verbose: bool = False) -> Path | None:
     """
     import glob
 
+    # Highest priority: user-specified override via env var
+    env_path = os.environ.get("SKILL_CREATOR_PATH")
+    if env_path:
+        p = Path(env_path).expanduser().resolve()
+        if (p / "scripts").is_dir():
+            if verbose:
+                print(f"Found skill-creator via $SKILL_CREATOR_PATH: {p}", file=sys.stderr)
+            return p
+
     home = Path.home()
     candidates = [
         # Marketplace plugins — skill content is inside skills/skill-creator/
@@ -187,10 +275,10 @@ def find_creator_path(verbose: bool = False) -> Path | None:
             return p
 
     if verbose:
-        print("skill-creator not found. Some features will use fallback evaluators.",
+        print("skill-creator not found.", file=sys.stderr)
+        print("Install from: https://github.com/anthropics/skills/tree/main/skills/skill-creator",
               file=sys.stderr)
-        print("Install from: https://github.com/anthropics/claude-plugins-official",
-              file=sys.stderr)
+        print("Or set: export SKILL_CREATOR_PATH=/your/path", file=sys.stderr)
     return None
 
 

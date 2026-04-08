@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from common import find_creator_path, find_workspace, find_evolve_dir, validate_frontmatter, parse_skill_md
+from common import require_creator, CreatorNotFoundError, find_workspace, find_evolve_dir, validate_frontmatter, parse_skill_md
 from aggregate_results import parse_results_tsv, calculate_summary
 from evaluators import get_evaluator, parse_evaluator_from_plan, Evaluator
 
@@ -768,6 +768,11 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
     log(f"Evaluator: {evaluator.info()}")
     log("=" * 60)
 
+    # Creator dependency check (fail fast)
+    log("Checking skill-creator dependency...")
+    creator_path = require_creator()
+    log(f"Creator found: {creator_path}")
+
     # Phase 0: Setup
     log("Phase 0: Setup")
     setup = phase_0_setup(skill_path, gt_path, workspace)
@@ -936,9 +941,7 @@ def _try_launch_eval_viewer(workspace: Path, skill_path: Path) -> bool:
     Generates a static HTML review of the evolution results.
     Returns True if viewer was launched successfully.
     """
-    creator_path = find_creator_path()
-    if not creator_path:
-        return False
+    creator_path = require_creator()
 
     viewer_script = creator_path / "eval-viewer" / "generate_review.py"
     if not viewer_script.exists():
@@ -1192,8 +1195,14 @@ def main():
     parser.add_argument("--info", action="store_true")
     parser.add_argument("--cleanup", action="store_true")
     parser.add_argument("--cleanup-versions", action="store_true")
+    parser.add_argument("--creator-path", type=Path, default=None,
+                        help="Path to skill-creator installation (overrides auto-discovery)")
     parser.add_argument("--verbose", action="store_true", default=True)
     args = parser.parse_args()
+
+    # Set creator path override via env var (picked up by require_creator())
+    if args.creator_path:
+        os.environ["SKILL_CREATOR_PATH"] = str(args.creator_path.resolve())
 
     ws = args.workspace or find_workspace(args.skill_path)
 
@@ -1262,6 +1271,14 @@ def main():
     evaluator_instance = None
     if eval_config.get("evaluator"):
         evaluator_instance = get_evaluator(eval_config)
+
+    # Verify creator is available before doing any real work
+    try:
+        creator = require_creator()
+        print(f"skill-creator found: {creator}", file=sys.stderr)
+    except CreatorNotFoundError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(2)
 
     if args.run:
         # THE REAL LOOP

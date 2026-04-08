@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent))
-from common import find_creator_path, validate_frontmatter
+from common import require_creator, find_creator_path, validate_frontmatter
 
 
 # ─────────────────────────────────────────────
@@ -415,7 +415,7 @@ class CreatorEvaluator(Evaluator):
       - Semantic assertions (path_hit, fact_coverage) → binary LLM call
     Program aggregates all binary results into final scores.
 
-    Falls back to LocalEvaluator if LLM CLI unavailable.
+    Falls back to LocalEvaluator if claude CLI unavailable.
     """
 
     name = "creator"

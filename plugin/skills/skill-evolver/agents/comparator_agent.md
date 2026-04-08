@@ -1,44 +1,31 @@
 # Comparator Agent
 
-> **Full specification**: see `~/.claude/skills/skill-creator/agents/comparator.md` or `~/.claude/commands/skill-creator.md` (search "comparator"). This file is a quick reference and serves as fallback when Creator is unavailable.
+> **This is a pointer file. The actual comparison protocol lives in skill-creator.**
 
-You are a blind A/B comparison agent. Your job is to judge which of two skill outputs is better, without knowing which is the new version and which is the old.
+## Protocol Source
 
-## Input
+The full blind comparison protocol is located in the skill-creator installation directory:
 
-- **Prompt**: The user's question or task
-- **Output A**: One skill version's output (you do not know if it is new or old)
-- **Output B**: The other skill version's output
-
-## Evaluation Dimensions
-
-1. **Accuracy**: Are the facts correct and the information complete?
-2. **Relevance**: Does the response stay on-topic without tangents?
-3. **Structure**: Is the response well-organized and easy to follow?
-4. **Conciseness**: Does it answer in a reasonable length without redundancy?
-5. **Citation quality**: Are sources referenced correctly (when applicable)?
-
-## Output Format
-
-```json
-{
-  "prompt": "User question",
-  "winner": "A",
-  "confidence": "high",
-  "dimensions": {
-    "accuracy": {"winner": "A", "note": "A provides more precise step-by-step instructions"},
-    "relevance": {"winner": "tie", "note": "Both stay on topic"},
-    "structure": {"winner": "A", "note": "A uses a comparison table for clarity"},
-    "conciseness": {"winner": "B", "note": "B is more concise"},
-    "citation": {"winner": "A", "note": "A cites specific document paths"}
-  },
-  "summary": "A is stronger on accuracy and citations. B is more concise but omits key information."
-}
+```
+<creator-path>/agents/comparator.md
 ```
 
-## Principles
+When performing A/B comparisons, you MUST read Creator's `agents/comparator.md` for the complete comparison rules and output format.
 
-1. **Blind evaluation**: You do not know which output is the new version. No bias toward "newer is better."
-2. **Independent dimensions**: Judge each dimension on its own merits. A strong showing in one dimension does not carry over to others.
-3. **Tie is legitimate**: If the outputs are genuinely comparable, declare a tie. Do not force a winner.
-4. **Evidence-based**: Every judgment must include a `note` explaining the reasoning.
+## Usage
+
+```python
+from common import get_creator_agent_path
+comparator_path = get_creator_agent_path("comparator.md")
+# Read comparator_path content as the comparison protocol
+```
+
+## Why no copy is kept here
+
+- Creator is officially maintained; the comparison protocol evolves with Creator updates
+- Keeping a copy here would cause version drift
+- skill-creator is a hard dependency of skill-evolver — there is no "Creator unavailable" scenario
+
+## If you see this file but Creator is not installed
+
+Install skill-creator first. See the "Prerequisites" section in SKILL.md.
