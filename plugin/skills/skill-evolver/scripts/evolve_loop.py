@@ -41,10 +41,41 @@ def phase_0_setup(skill_path: Path, gt_path: Path,
     On first use, auto-detects creator tools (skill-creator, claw-creator, etc.)
     and configures the evaluation pipeline accordingly.
 
+    Enforces the "clean git state" precondition from
+    ``references/evolve_protocol.md`` Phase 0 — without it,
+    ``phase_4_commit``'s ``git add -A`` would sweep the user's unrelated
+    uncommitted edits into an experiment commit, and a subsequent
+    ``git revert`` (after a discard) would silently delete that work.
+
     Returns: {"workspace", "evolve_dir", "plan_path", "baseline_needed", "creator_config"}
     """
     from setup_workspace import setup_workspace  # noqa: sibling import
     from common import setup_creator_config
+
+    # Precondition: skill dir must be a git repo AND have a clean working
+    # tree. If it's not a git repo, phase_4_commit can't commit anything
+    # anyway; if it's dirty, we would silently co-opt the user's work.
+    try:
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=str(skill_path), capture_output=True, text=True, timeout=10,
+        )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        raise RuntimeError(f"Phase 0: cannot run `git status` in {skill_path}: {e}") from e
+    if status.returncode != 0:
+        raise RuntimeError(
+            f"Phase 0: {skill_path} is not a git repo. Run `git init` first "
+            f"(see evolve_protocol.md Phase 4 Step 2)."
+        )
+    if status.stdout.strip():
+        raise RuntimeError(
+            f"Phase 0: {skill_path} has uncommitted changes. Commit or stash "
+            f"them before running evolve — otherwise `git add -A` in "
+            f"phase_4_commit would sweep them into the first experiment "
+            f"commit, and a discarded iteration would silently revert "
+            f"your work.\n\n"
+            f"Dirty files:\n{status.stdout}"
+        )
 
     ws = workspace or find_workspace(skill_path)
     result = setup_workspace(skill_path, ws)
