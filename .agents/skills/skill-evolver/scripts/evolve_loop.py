@@ -12,7 +12,7 @@ Usage:
     python evolve_loop.py <skill-path> --cleanup
 
 This script runs the complete 8-phase evolve cycle. Phase 2 (Ideate) and
-Phase 3 (Modify) use `codex -q` subprocess to invoke LLM reasoning.
+Phase 3 (Modify) use `claude -p` subprocess to invoke LLM reasoning.
 """
 
 import json
@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from common import find_creator_path, find_workspace, find_evolve_dir, validate_frontmatter
+from common import require_creator, CreatorNotFoundError, find_workspace, find_evolve_dir, validate_frontmatter, parse_skill_md
 from aggregate_results import parse_results_tsv, calculate_summary
 from evaluators import get_evaluator, parse_evaluator_from_plan, Evaluator
 
@@ -38,9 +38,13 @@ def phase_0_setup(skill_path: Path, gt_path: Path,
                   workspace: Path | None = None) -> dict:
     """Create workspace, initialize memory, generate evolve_plan template.
 
-    Returns: {"workspace", "evolve_dir", "plan_path", "baseline_needed"}
+    On first use, auto-detects creator tools (skill-creator, claw-creator, etc.)
+    and configures the evaluation pipeline accordingly.
+
+    Returns: {"workspace", "evolve_dir", "plan_path", "baseline_needed", "creator_config"}
     """
     from setup_workspace import setup_workspace  # noqa: sibling import
+    from common import setup_creator_config
 
     ws = workspace or find_workspace(skill_path)
     result = setup_workspace(skill_path, ws)
@@ -48,6 +52,9 @@ def phase_0_setup(skill_path: Path, gt_path: Path,
     evolve_dir = Path(result["evolve_dir"])
     plan_path = evolve_dir / "evolve_plan.md"
     results_tsv = evolve_dir / "results.tsv"
+
+    # First-use creator detection and configuration
+    creator_config = setup_creator_config(ws, skill_path)
 
     # Check if baseline already exists
     baseline_needed = True
@@ -63,6 +70,7 @@ def phase_0_setup(skill_path: Path, gt_path: Path,
         "baseline_needed": baseline_needed,
         "gt_path": str(gt_path),
         "skill_path": str(skill_path),
+        "creator_config": creator_config,
     }
 
 
@@ -117,6 +125,25 @@ def phase_1_review(workspace: Path) -> dict:
     except (subprocess.TimeoutExpired, OSError):
         pass
 
+    # Meta-Harness: read execution traces from recent failed iterations
+    # Enables active diagnosis in Phase 2 (grep traces, not guess)
+    recent_traces = {}
+    if rows:
+        # Find the most recent iteration with traces
+        for row in reversed(rows):
+            iter_num = row.get("iteration", 0)
+            trace_dir = evolve_dir / f"iteration-E{iter_num}" / "traces"
+            if trace_dir.exists():
+                for trace_file in sorted(trace_dir.glob("case_*.md"))[:10]:
+                    recent_traces[trace_file.stem] = trace_file.read_text()[:2000]
+                break  # only the most recent iteration's traces
+
+    # Collect past diagnoses (counterfactual insights from prior iterations)
+    past_diagnoses = [
+        e.get("diagnosis") for e in recent_experiments
+        if e.get("diagnosis")
+    ][-5:]
+
     return {
         "iterations": summary["total_iterations"],
         "keeps": summary["keep_count"],
@@ -130,6 +157,8 @@ def phase_1_review(workspace: Path) -> dict:
         "recent_failures": recent_failures,
         "successful_patterns": successful_patterns,
         "git_log": git_log,
+        "recent_traces": recent_traces,
+        "past_diagnoses": past_diagnoses,
     }
 
 
@@ -152,7 +181,7 @@ def phase_2_prepare_ideation(workspace: Path, review: dict,
     # Priority suggestions based on review
     suggestions = []
     if review.get("stuck"):
-        suggestions.append("STUCK detected — try radical strategy (大胆尝试)")
+        suggestions.append("STUCK detected — try radical strategy (different layer or approach)")
     if review.get("recent_failures"):
         last_failure = review["recent_failures"][-1]
         suggestions.append(f"Last failure: {last_failure.get('intent', '?')} — avoid repeating")
@@ -319,8 +348,13 @@ def phase_7_log(workspace: Path, iteration: int, commit: str,
                 metric: float, delta: float, trigger_f1: float,
                 tokens: int, guard: str, status: str,
                 layer: str, description: str,
-                experiment: dict | None = None) -> None:
-    """Append to results.tsv and experiments.jsonl."""
+                experiment: dict | None = None,
+                traces: dict | None = None) -> None:
+    """Append to results.tsv, experiments.jsonl, and write execution traces.
+
+    Traces (Meta-Harness pattern): full evaluation output per test case,
+    stored as individual files for active diagnosis in Phase 1/2.
+    """
     evolve_dir = workspace / "evolve"
 
     # results.tsv
@@ -336,6 +370,14 @@ def phase_7_log(workspace: Path, iteration: int, commit: str,
         jsonl_path = evolve_dir / "experiments.jsonl"
         with open(jsonl_path, "a") as f:
             f.write(json.dumps(experiment, ensure_ascii=False) + "\n")
+
+    # Execution traces (Meta-Harness: full output per case for diagnosis)
+    if traces:
+        trace_dir = evolve_dir / f"iteration-E{iteration}" / "traces"
+        trace_dir.mkdir(parents=True, exist_ok=True)
+        for case_id, trace_content in traces.items():
+            trace_file = trace_dir / f"case_{case_id}.md"
+            trace_file.write_text(str(trace_content))
 
 
 # ─────────────────────────────────────────────
@@ -433,7 +475,7 @@ def save_best_version(skill_path: Path, workspace: Path, iteration: int) -> str:
 # Backend registry: name → (command_template, env_filter)
 LLM_BACKENDS = {
     "claude": {
-        "cmd": ["codex", "-q", "{prompt}", "--output-format", "text"],
+        "cmd": ["claude", "-p", "{prompt}", "--output-format", "text"],
         "model_flag": "--model",
         "env_filter": lambda env: {k: v for k, v in env.items() if k != "CLAUDECODE"},
     },
@@ -554,7 +596,7 @@ def phase_2_3_ideate_and_modify(skill_path: Path, workspace: Path,
                                 review: dict, gt_path: Path,
                                 current_layer: str = "body",
                                 model: str | None = None) -> dict:
-    """Phase 2+3: Use codex -q to analyze failures and make an atomic change.
+    """Phase 2+3: Use claude -p to analyze failures and make an atomic change.
 
     Returns: {"changed": bool, "description": str, "mutation_type": str}
     """
@@ -563,6 +605,20 @@ def phase_2_3_ideate_and_modify(skill_path: Path, workspace: Path,
     # Build context for Claude
     recent_failures = json.dumps(review.get("recent_failures", []), ensure_ascii=False)
     successful = json.dumps(review.get("successful_patterns", []), ensure_ascii=False)
+
+    # Meta-Harness: include trace evidence for active diagnosis
+    trace_context = ""
+    recent_traces = review.get("recent_traces", {})
+    if recent_traces:
+        trace_lines = []
+        for name, content in list(recent_traces.items())[:5]:
+            trace_lines.append(f"--- {name} ---\n{content}")
+        trace_context = "\n".join(trace_lines)
+
+    diagnosis_context = ""
+    past_diagnoses = review.get("past_diagnoses", [])
+    if past_diagnoses:
+        diagnosis_context = "\n".join(f"- {d}" for d in past_diagnoses)
 
     prompt = f"""You are optimizing a skill's SKILL.md. Make ONE atomic improvement.
 
@@ -574,17 +630,24 @@ Successful patterns: {successful}
 Current best metric: {review.get('current_best_metric', 'unknown')}
 Is stuck: {review.get('stuck', False)}
 
-Read the SKILL.md at {skill_path / 'SKILL.md'}, then:
-1. Identify ONE specific weakness or area for improvement
-2. Make ONE atomic change using the Edit tool
-3. The change must be explainable in one sentence
-4. Do NOT add unnecessary MUST/NEVER — explain WHY instead
+{"## Execution Traces (from most recent eval)" + chr(10) + trace_context if trace_context else ""}
+
+{"## Past Diagnoses (insights from prior iterations)" + chr(10) + diagnosis_context if diagnosis_context else ""}
+
+MANDATORY PROTOCOL (Meta-Harness active diagnosis):
+1. If traces are provided, READ THEM FIRST — identify the specific assertion
+   that failed and WHY it failed based on the trace evidence
+2. State your diagnosis: "Case X failed because [specific reason from trace]"
+3. Then propose ONE atomic change that directly addresses the diagnosed cause
+4. Do NOT guess — if no trace evidence points to a clear cause, say so
+
+Read the SKILL.md at {skill_path / 'SKILL.md'}, then make your change.
 
 After making the change, output EXACTLY this JSON on the last line:
-{{"changed": true, "description": "one sentence describing what you changed", "mutation_type": "body_rewrite"}}
+{{"changed": true, "description": "one sentence describing what you changed", "mutation_type": "body_rewrite", "diagnosis": "Case X failed because Y, so I changed Z"}}
 
 If you find nothing to improve, output:
-{{"changed": false, "description": "no improvement found", "mutation_type": "none"}}
+{{"changed": false, "description": "no improvement found", "mutation_type": "none", "diagnosis": ""}}
 """
 
     response = _call_claude(prompt, model=model, timeout=180)
@@ -604,7 +667,7 @@ If you find nothing to improve, output:
 
 def run_l2_eval_via_claude(skill_path: Path, gt_path: Path,
                            workspace: Path, model: str | None = None) -> dict:
-    """Phase 5 L2: Use codex -q to evaluate skill against GT cases.
+    """Phase 5 L2: Use claude -p to evaluate skill against GT cases.
 
     Returns: {"pass_rate": float, "total_passed": int, "total_assertions": int, ...}
     """
@@ -637,7 +700,7 @@ Output EXACTLY this JSON format on the last line (no other text after it):
 
 
 def _local_eval(skill_path: Path, gt_path: Path) -> dict:
-    """Fallback local eval when codex -q is unavailable."""
+    """Fallback local eval when claude -p is unavailable."""
     skill_content = (skill_path / "SKILL.md").read_text()
     gt_data = json.loads(gt_path.read_text())
     dev_cases = [c for c in gt_data.get("evals", []) if c.get("split", "dev") == "dev"]
@@ -677,7 +740,7 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
                     evaluator: Evaluator | None = None) -> dict:
     """Run the complete 8-phase evolve loop.
 
-    This is the REAL auto loop. Phase 2+3 use codex -q for LLM reasoning.
+    This is the REAL auto loop. Phase 2+3 use claude -p for LLM reasoning.
     Evaluation uses the pluggable Evaluator interface.
 
     Args:
@@ -704,6 +767,11 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
     log(f"Max iterations: {max_iterations}")
     log(f"Evaluator: {evaluator.info()}")
     log("=" * 60)
+
+    # Creator dependency check (fail fast)
+    log("Checking skill-creator dependency...")
+    creator_path = require_creator()
+    log(f"Creator found: {creator_path}")
 
     # Phase 0: Setup
     log("Phase 0: Setup")
@@ -740,8 +808,8 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
         review = phase_1_review(workspace)
         log(f"  {review['iterations']} iters, {review['keeps']} keeps, stuck={review['stuck']}")
 
-        # Phase 2+3: Ideate and Modify (via codex -q)
-        log("Phase 2+3: Ideate and Modify (calling codex -q)")
+        # Phase 2+3: Ideate and Modify (via claude -p)
+        log("Phase 2+3: Ideate and Modify (calling claude -p)")
         result_23 = phase_2_3_ideate_and_modify(
             skill_path, workspace, review, gt_path, current_layer, model)
         log(f"  Result: changed={result_23['changed']}, {result_23['description']}")
@@ -778,13 +846,17 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
         delta = new_rate - best_rate
         log(f"  L2: {new_eval.get('total_passed', '?')}/{new_eval.get('total_assertions', '?')} = {new_rate:.0%} (delta: {delta:+.0%})")
 
-        # Phase 6: Gate
+        # Phase 6: Gate (with real metrics from evaluator)
         log("Phase 6: Gate")
         gate = phase_6_gate_decision(
             {"pass_rate": new_rate, "l1_pass": True, "trigger_f1": 1.0,
-             "tokens_mean": 0, "duration_mean": 0, "regression_pass": 1.0},
+             "tokens_mean": new_eval.get("tokens", 0),
+             "duration_mean": new_eval.get("duration", 0.0),
+             "regression_pass": 1.0},
             {"pass_rate": best_rate, "trigger_f1": 1.0,
-             "tokens_mean": 0, "duration_mean": 0, "regression_pass": 1.0},
+             "tokens_mean": baseline.get("tokens", 0),
+             "duration_mean": baseline.get("duration", 0.0),
+             "regression_pass": 1.0},
             {"min_delta": 0.01, "noise_threshold": 0.005}
         )
         decision = gate["decision"]
@@ -798,12 +870,12 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
             git_revert_last(skill_path)
             log(f"  {decision.upper()} — reverted")
 
-        # Phase 7: Log
+        # Phase 7: Log (with traces for Meta-Harness active diagnosis)
         elapsed = time.time() - t0
         phase_7_log(workspace, iteration, commit["commit_hash"],
                     new_rate * 100, delta * 100,
-                    1.0, 0, "pass", decision, current_layer,
-                    result_23["description"],
+                    1.0, new_eval.get("tokens", 0), "pass", decision,
+                    current_layer, result_23["description"],
                     experiment={
                         "iteration": iteration,
                         "mutation_type": result_23["mutation_type"],
@@ -811,7 +883,11 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
                         "intent": result_23["description"],
                         "status": decision,
                         "elapsed_seconds": round(elapsed, 1),
-                    })
+                        "tokens": new_eval.get("tokens", 0),
+                        "duration": new_eval.get("duration", 0.0),
+                        "diagnosis": result_23.get("diagnosis", ""),
+                    },
+                    traces=new_eval.get("traces"))
         log(f"  Logged ({elapsed:.1f}s)")
 
         # Phase 8: Loop control
@@ -839,6 +915,11 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
 
     cleanup_best_versions(workspace, keep_n=3)
 
+    # Try to launch Creator's eval viewer if available
+    viewer_launched = _try_launch_eval_viewer(workspace, skill_path)
+    if viewer_launched:
+        log("Eval viewer launched — open the URL above to review results")
+
     return {
         "baseline_rate": baseline_rate,
         "best_rate": best_rate,
@@ -846,7 +927,62 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
         "iterations": final_summary["total_iterations"],
         "keeps": final_summary["keep_count"],
         "discards": final_summary["discard_count"],
+        "viewer_launched": viewer_launched,
     }
+
+
+# ─────────────────────────────────────────────
+# Eval Viewer Integration
+# ─────────────────────────────────────────────
+
+def _try_launch_eval_viewer(workspace: Path, skill_path: Path) -> bool:
+    """Try to launch Creator's eval viewer (generate_review.py) if available.
+
+    Generates a static HTML review of the evolution results.
+    Returns True if viewer was launched successfully.
+    """
+    creator_path = require_creator()
+
+    viewer_script = creator_path / "eval-viewer" / "generate_review.py"
+    if not viewer_script.exists():
+        return False
+
+    # Parse skill name for the viewer
+    try:
+        name, _, _ = parse_skill_md(skill_path)
+    except (ValueError, FileNotFoundError):
+        name = skill_path.name
+
+    # Find the latest benchmark file
+    evolve_dir = workspace / "evolve"
+    benchmark_path = None
+    for d in sorted(evolve_dir.iterdir(), reverse=True):
+        if d.is_dir() and d.name.startswith("iteration-E"):
+            bp = d / "benchmark.json"
+            if bp.exists():
+                benchmark_path = bp
+                break
+
+    try:
+        cmd = [
+            sys.executable, str(viewer_script),
+            str(workspace),
+            "--skill-name", name,
+            "--static", str(workspace / "evolve" / "review.html"),
+        ]
+        if benchmark_path:
+            cmd.extend(["--benchmark", str(benchmark_path)])
+
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode == 0:
+            print(f"Review saved: {workspace / 'evolve' / 'review.html'}",
+                  file=sys.stderr)
+            return True
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+    return False
 
 
 # ─────────────────────────────────────────────
@@ -949,6 +1085,93 @@ def cleanup_eval_outputs(workspace: Path, keep_recent: int = 5) -> list[str]:
 
 
 # ─────────────────────────────────────────────
+# GT Auto-Construction
+# ─────────────────────────────────────────────
+
+def auto_construct_gt(skill_path: Path, output_path: Path,
+                      model: str | None = None) -> dict | None:
+    """Auto-construct GT data by analyzing the skill's SKILL.md.
+
+    Uses LLM to read the skill and generate realistic test cases
+    with assertions. Saves to output_path as evals.json.
+
+    This follows the Creator's test case construction methodology:
+    understand skill → write realistic test prompts → draft assertions.
+
+    Returns: {"count": int} on success, None on failure.
+    """
+    skill_md = skill_path / "SKILL.md"
+    if not skill_md.exists():
+        return None
+
+    skill_content = skill_md.read_text()
+    if len(skill_content.strip()) < 50:
+        return None  # SKILL.md too short to auto-construct GT from
+
+    prompt = f"""You are generating ground-truth test data for evaluating a skill.
+
+Read this SKILL.md and generate 8 test cases (6 dev + 2 holdout):
+
+{skill_content[:6000]}
+
+For each test case, create realistic user prompts that would trigger this skill,
+and assertions that check whether the SKILL.md content properly addresses them.
+
+Use these assertion types:
+- "contains": SKILL.md must contain this text (case-insensitive)
+- "not_contains": SKILL.md must NOT contain this text
+- "regex": SKILL.md must match this regex pattern
+
+Output EXACTLY this JSON format (no other text):
+{{
+  "evals": [
+    {{
+      "id": 1,
+      "prompt": "realistic user prompt",
+      "assertions": [
+        {{"type": "contains", "value": "expected text", "description": "what this checks"}}
+      ],
+      "split": "dev",
+      "metadata": {{"note": "why this case matters"}}
+    }}
+  ]
+}}
+
+Requirements:
+- 6 cases with "split": "dev", 2 cases with "split": "holdout"
+- Each case should test a different aspect of the skill
+- Include at least one not_contains assertion (negative test)
+- Make prompts realistic (how a real user would trigger this skill)
+- Assertions should check that SKILL.md has the right instructions
+"""
+
+    response = _call_llm(prompt, model=model, timeout=180)
+
+    # Parse JSON from response
+    for line in response.split("\n"):
+        line = line.strip()
+        if line.startswith("{") and '"evals"' in line:
+            try:
+                data = json.loads(line)
+                output_path.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+                return {"count": len(data.get("evals", []))}
+            except json.JSONDecodeError:
+                pass
+
+    # Try to find JSON block in the full response
+    json_match = re.search(r'\{[\s\S]*"evals"[\s\S]*\}', response)
+    if json_match:
+        try:
+            data = json.loads(json_match.group())
+            output_path.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+            return {"count": len(data.get("evals", []))}
+        except json.JSONDecodeError:
+            pass
+
+    return None
+
+
+# ─────────────────────────────────────────────
 # Main (reference CLI)
 # ─────────────────────────────────────────────
 
@@ -972,8 +1195,14 @@ def main():
     parser.add_argument("--info", action="store_true")
     parser.add_argument("--cleanup", action="store_true")
     parser.add_argument("--cleanup-versions", action="store_true")
+    parser.add_argument("--creator-path", type=Path, default=None,
+                        help="Path to skill-creator installation (overrides auto-discovery)")
     parser.add_argument("--verbose", action="store_true", default=True)
     args = parser.parse_args()
+
+    # Set creator path override via env var (picked up by require_creator())
+    if args.creator_path:
+        os.environ["SKILL_CREATOR_PATH"] = str(args.creator_path.resolve())
 
     ws = args.workspace or find_workspace(args.skill_path)
 
@@ -1000,7 +1229,33 @@ def main():
         return
 
     if not args.gt:
-        parser.error("--gt is required")
+        # Auto-discover GT data
+        candidates = [
+            ws / "evals" / "evals.json",
+            args.skill_path / "evals.json",
+            args.skill_path.parent / "evals.json",
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                args.gt = candidate
+                print(f"Auto-discovered GT data: {candidate}", file=sys.stderr)
+                break
+        if not args.gt:
+            # Auto-construct GT using LLM to analyze the skill
+            gt_target = ws / "evals" / "evals.json"
+            gt_target.parent.mkdir(parents=True, exist_ok=True)
+            print("No GT data found. Auto-constructing from SKILL.md...",
+                  file=sys.stderr)
+            gt_result = auto_construct_gt(args.skill_path, gt_target,
+                                          model=args.model)
+            if gt_result:
+                args.gt = gt_target
+                print(f"Generated {gt_result['count']} test cases → {gt_target}",
+                      file=sys.stderr)
+            else:
+                print("Error: GT auto-construction failed. Provide --gt manually.",
+                      file=sys.stderr)
+                sys.exit(1)
 
     # Build evaluator from CLI args or evolve_plan.md
     eval_config = {}
@@ -1016,6 +1271,14 @@ def main():
     evaluator_instance = None
     if eval_config.get("evaluator"):
         evaluator_instance = get_evaluator(eval_config)
+
+    # Verify creator is available before doing any real work
+    try:
+        creator = require_creator()
+        print(f"skill-creator found: {creator}", file=sys.stderr)
+    except CreatorNotFoundError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(2)
 
     if args.run:
         # THE REAL LOOP
@@ -1036,4 +1299,20 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nInterrupted by user.", file=sys.stderr)
+        sys.exit(130)
+    except FileNotFoundError as e:
+        print(f"Error: File not found — {e}", file=sys.stderr)
+        sys.exit(1)
+    except json.JSONDecodeError as e:
+        print(f"Error: Invalid JSON in GT data — {e}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        print("Run with PYTHONTRACEBACK=1 for full traceback.", file=sys.stderr)
+        if os.environ.get("PYTHONTRACEBACK"):
+            raise
+        sys.exit(1)

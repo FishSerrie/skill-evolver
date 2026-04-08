@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from common import find_creator_path, validate_frontmatter
+from common import require_creator, CreatorNotFoundError, validate_frontmatter
 
 
 def check_skill_structure(skill_path: Path) -> list[dict]:
@@ -115,15 +115,18 @@ def quick_gt_sample(gt_path: Path, n_samples: int = 3) -> list[dict]:
     return checks
 
 
-def try_creator_validate(skill_path: Path) -> list[dict]:
-    """Try to use creator's quick_validate.py if available."""
-    creator = find_creator_path()
-    if not creator:
-        return []
+def creator_validate(skill_path: Path) -> list[dict]:
+    """Run creator's quick_validate.py. Creator MUST be available."""
+    creator = require_creator()  # raises CreatorNotFoundError if missing
 
     validate_script = creator / "scripts" / "quick_validate.py"
     if not validate_script.exists():
-        return []
+        return [{
+            "name": "creator_validate",
+            "pass": False,
+            "detail": f"Creator's quick_validate.py not found at {validate_script}. "
+                      "Your skill-creator installation may be incomplete or outdated.",
+        }]
 
     try:
         result = subprocess.run(
@@ -135,11 +138,17 @@ def try_creator_validate(skill_path: Path) -> list[dict]:
             "pass": result.returncode == 0,
             "detail": result.stdout.strip() or result.stderr.strip() or "creator validation complete",
         }]
-    except (subprocess.TimeoutExpired, OSError) as e:
+    except subprocess.TimeoutExpired:
         return [{
             "name": "creator_validate",
-            "pass": True,  # Don't fail on creator unavailability
-            "detail": f"Creator validate skipped: {e}",
+            "pass": False,
+            "detail": "Creator validation timed out (10s)",
+        }]
+    except OSError as e:
+        return [{
+            "name": "creator_validate",
+            "pass": False,
+            "detail": f"Creator validation error: {e}",
         }]
 
 
@@ -154,7 +163,7 @@ def run_l1_gate(skill_path: Path, gt_path: Path | None = None) -> dict:
     all_checks.extend(check_skill_structure(skill_path))
 
     # Creator validation
-    all_checks.extend(try_creator_validate(skill_path))
+    all_checks.extend(creator_validate(skill_path))
 
     # GT sampling
     if gt_path and gt_path.exists():

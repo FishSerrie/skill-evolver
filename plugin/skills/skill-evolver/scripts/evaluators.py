@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent))
-from common import find_creator_path, validate_frontmatter
+from common import require_creator, find_creator_path, validate_frontmatter
 
 
 # ─────────────────────────────────────────────
@@ -56,6 +56,10 @@ class BinaryLLMJudge:
     Core principle: LLM only classifies, never scores.
     Each call asks exactly one question with a YES or NO answer.
     Programs aggregate the binary results into scores.
+
+    Uses the pluggable backend system from evolve_loop.py — supports
+    claude, codex, opencode, and HTTP endpoints. Auto-detects the
+    available backend, or respects LLM_BACKEND env var.
     """
 
     def __init__(self, model: str | None = None, timeout: int = 60):
@@ -63,6 +67,42 @@ class BinaryLLMJudge:
         self.timeout = timeout
         self.total_tokens = 0
         self.total_duration = 0.0
+        self._call_llm = None  # lazy import to avoid circular dependency
+
+    def _get_llm_caller(self):
+        """Lazy import of _call_llm from evolve_loop to avoid circular imports."""
+        if self._call_llm is None:
+            try:
+                from evolve_loop import _call_llm
+                self._call_llm = _call_llm
+            except ImportError:
+                # Fallback: inline implementation for standalone use
+                self._call_llm = self._fallback_call_llm
+        return self._call_llm
+
+    def _fallback_call_llm(self, prompt: str, model: str | None = None,
+                           timeout: int = 120, backend: str | None = None) -> str:
+        """Fallback LLM caller when evolve_loop is not importable.
+        Auto-detects available CLI (claude > codex > opencode)."""
+        for cli in ["claude", "codex", "opencode"]:
+            cmd = [cli]
+            if cli == "claude":
+                cmd.extend(["-p", prompt, "--output-format", "text"])
+            elif cli == "codex":
+                cmd.extend(["-q", prompt])
+            else:
+                cmd.extend(["run", prompt])
+            if model:
+                cmd.extend(["--model", model])
+            env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+            try:
+                result = subprocess.run(
+                    cmd, capture_output=True, text=True,
+                    timeout=timeout, env=env)
+                return result.stdout.strip()
+            except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+                continue
+        return "[ERROR: No LLM CLI found — install claude, codex, or opencode]"
 
     def judge(self, question: str, context: str) -> bool:
         """Ask the LLM a single binary question about the context.
@@ -81,32 +121,24 @@ class BinaryLLMJudge:
             f"Answer (YES or NO):"
         )
 
-        cmd = ["claude", "-p", prompt, "--output-format", "text"]
-        if self.model:
-            cmd.extend(["--model", self.model])
-
-        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+        call_llm = self._get_llm_caller()
         t0 = time.time()
         try:
-            result = subprocess.run(
-                cmd, capture_output=True, text=True,
-                timeout=self.timeout, env=env,
-            )
+            output = call_llm(prompt, model=self.model, timeout=self.timeout)
             duration = time.time() - t0
             self.total_duration += duration
-            # Rough token estimate from output length
             self.total_tokens += max(len(prompt) // 4, 1)
 
-            output = result.stdout.strip().upper()
+            output = output.strip().upper()
             # Parse YES/NO from output — handle variations
-            if "YES" in output.split("\n")[-1] if output else "":
+            last_line = output.split("\n")[-1] if output else ""
+            if "YES" in last_line:
                 return True
-            if "NO" in output.split("\n")[-1] if output else "":
+            if "NO" in last_line:
                 return False
-            # Fallback: check entire output for clear signal
             return "YES" in output and "NO" not in output
 
-        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        except Exception:
             self.total_duration += time.time() - t0
             return False
 

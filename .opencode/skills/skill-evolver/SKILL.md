@@ -1,260 +1,288 @@
 ---
 name: skill-evolver
-description: "Skill 自动进化引擎 — 基于 skill-creator 评测能力 + autoresearch 自主迭代思想，自动创建、评测、迭代优化 skill。内核：Creator 做评测打分，AutoResearch 式循环做搜索优化，Evolver 加门控和记忆实现全自动进化。支持 evolve/eval/create/benchmark/improve 五种模式。Triggers on: 'evolve skill', '进化 skill', '优化 skill', 'skill 评测', 'skill benchmark', '让 skill 变强', '自动优化'."
+description: "Automatic skill evolution engine — powered by skill-creator's evaluation capabilities + autoresearch's autonomous iteration methodology. Core: Creator handles evaluation and grading, AutoResearch-style loop handles search and optimization, Evolver adds gating and memory for fully automatic evolution. Supports evolve/eval/create/benchmark/improve modes. Triggers on: '/skill-evolver', 'evolve skill', 'optimize skill', 'skill eval', 'skill benchmark', 'make skill better', 'auto-optimize', 'improve skill', 'create skill', 'skill evolver', '进化 skill', '优化 skill', 'skill 评测', '让 skill 变强', '自动优化', '改进 skill', '创建 skill'."
 ---
 
-# Skill Evolver (OpenCode)
+# Skill Evolver
 
-一个以 GT 为中心、以 Creator 为评测范式、以 AutoResearch 为搜索制度的统一入口 Skill 自动优化器。
+A unified skill optimizer centered on ground-truth data, powered by Creator for evaluation and AutoResearch for search.
 
-## 快速开始
+## Quick Start
 
 ```bash
-# 全自动优化已有 skill（核心功能，一条命令跑完整 loop）
+# Fully automatic optimization of an existing skill (core feature — one command runs the entire loop)
 python3 scripts/evolve_loop.py ./my-skill/ --gt ./evals.json --run --max-iterations 20
 
-# 评测已有 skill
+# Evaluate an existing skill
 /skill-evolver eval ./my-skill/ --gt ./evals.json
 
-# 从零创建新 skill
+# Create a new skill from scratch
 /skill-evolver create
 
-# 对比两个版本
+# Compare two versions
 /skill-evolver benchmark ./skill-v1/ ./skill-v2/ --gt ./evals.json
 ```
 
-**前置条件：**
-- GT 数据（测试用例 + assertions）必须存在
-- skill 目录推荐在 git 管理下
-- skill-creator 已安装（用于评测能力）
+**Prerequisites:**
+- **skill-creator installed (hard dependency)** — Evolver refuses to start without it. See installation guide below.
+- GT data (test cases + assertions) should be prepared in advance; if unavailable, evolve mode auto-generates them via Creator
+- The skill directory **must be under git** (if uninitialized, Phase 0 forces `git init`; if git is not installed, install it first)
+
+### Installing skill-creator
+
+skill-creator is a hard dependency. If it is not found, Evolver errors out with these instructions. Install in one of three ways:
+
+1. **Plugin marketplace (recommended):** In Claude Code, run `/install skill-creator`
+
+2. **Manual install from GitHub:**
+   ```bash
+   git clone https://github.com/anthropics/skills.git /tmp/anthropic-skills-latest
+   cp -r /tmp/anthropic-skills-latest/skills/skill-creator ~/.claude/skills/skill-creator
+   ```
+   Source: https://github.com/anthropics/skills/tree/main/skills/skill-creator
+
+3. **Already installed at a custom path?**
+   ```bash
+   export SKILL_CREATOR_PATH=/your/path/to/skill-creator
+   # or pass via CLI:
+   python3 scripts/evolve_loop.py ./my-skill --gt ./evals.json --run --creator-path /your/path
+   ```
+
+See `references/creator_integration.md` Section 3 for the full path discovery order.
 
 ---
 
-## 核心理念
+## Core Principles
 
-- **外循环搜索，内循环评测**：AutoResearch 式循环决定"改什么"，Creator 式评测度量"改得怎么样"
-- **GT First**：没有 GT 数据不开始优化
-- **一轮一个原子改动**：每轮只做一个可归因的变化
-- **多门控，不单指标**：质量、触发、成本、时延、回归全部独立判定
-- **调用 Creator，不复制**：评测/打分/比较能力来自 skill-creator，creator 更新自动生效
-
----
-
-## 与 Skill Creator 的关系
-
-**Evolver 是 Creator 的超集。** Creator 提供「单次评测循环（人在回路中）」，Evolver 在此基础上加了「自动外循环 + 门控 + 记忆（人不在回路中）」。
-
-- Evolver 通过**引用**调用 Creator 的能力，不复制代码
-- Creator 更新后 Evolver 自动生效
-- 详见 `references/creator_integration.md`
-
-**Creator 路径发现顺序：**
-1. `~/.claude/skills/skill-creator/`
-2. `.claude/skills/skill-creator/`（项目级）
-3. `~/.claude/commands/skill-creator.md`（单文件版）
+- **Outer loop searches, inner loop evaluates**: AutoResearch-style iteration decides *what to change*; Creator-style evaluation measures *how well the change worked*
+- **GT First**: No optimization starts without ground-truth data
+- **One atomic change per iteration**: Each round makes exactly one attributable modification
+- **Multi-gate, not single-metric**: Quality, trigger accuracy, cost, latency, and regression are each gated independently
+- **Call Creator, don't copy it**: Evaluation, grading, and comparison capabilities come from skill-creator; when Creator updates, Evolver picks up the changes automatically
+- **LLM Binary + Program Scoring**: The LLM only makes atomic YES/NO judgments; all numeric scoring, aggregation, and threshold logic is handled by deterministic program code
 
 ---
 
-## 五个模式
+## Relationship with Skill Creator
 
-| 模式 | 触发方式 | 职责 | 调用 Creator？ |
+**Evolver is a superset of Creator.** Creator provides a *single evaluation cycle (human-in-the-loop)*. Evolver adds an *automated outer loop + gates + memory (human-out-of-the-loop)* on top.
+
+- Evolver **references** Creator's capabilities — it does not duplicate code
+- When Creator updates, Evolver benefits automatically
+- See `references/creator_integration.md` for details
+
+**Creator path discovery order:** See Section 3 of `references/creator_integration.md`. Multiple locations are searched in priority order. If none are found, Evolver errors out with installation instructions — there is no silent degradation.
+
+---
+
+## Five Modes
+
+| Mode | Trigger | Responsibility | Calls Creator? |
 |---|---|---|---|
-| **Create** | `/skill-evolver create` | 从需求 + GT 生成初版 skill | 是：读取 Creator 的创建流程 |
-| **Eval** | `/skill-evolver eval` | 单次评测，产出 benchmark | 是：调用 Creator 的 run_eval |
-| **Improve** | `/skill-evolver improve` | 人主导定向改进 | 是：按 Creator 的迭代流程 |
-| **Benchmark** | `/skill-evolver benchmark` | 系统对比分析（A/B、盲评） | 是：调用 Creator 的 comparator/analyzer |
-| **Evolve** | `/skill-evolver evolve` | 自动循环优化（核心） | 部分：评测调用 Creator，搜索/门控/记忆是自有 |
+| **Create** | `/skill-evolver create` | Generate an initial skill from requirements + GT | Yes: reads Creator's creation workflow |
+| **Eval** | `/skill-evolver eval` | Single evaluation pass, produces a benchmark | Yes: calls Creator's run_eval |
+| **Improve** | `/skill-evolver improve` | Human-directed targeted improvement | Yes: follows Creator's iteration workflow |
+| **Benchmark** | `/skill-evolver benchmark` | Systematic comparison (A/B, blind review) | Yes: calls Creator's comparator/analyzer |
+| **Evolve** | `/skill-evolver evolve` | Automated iterative optimization (core) | Partial: evaluation via Creator; search/gating/memory are Evolver's own |
 
-Pipeline 是运行方式：`/skill-evolver pipeline --mode create+eval+evolve`
+Pipeline is a run mode: `/skill-evolver pipeline --mode create+eval+evolve`
 
 ---
 
-## Workspace 机制
+## Workspace Mechanism
 
-Evolver **不在自身目录中存储任何 skill 特定数据**。它复用 Creator 已有的 workspace 目录。
+Evolver **stores no skill-specific data in its own directory**. It reuses Creator's existing workspace directory.
 
-### Workspace = Creator 的 workspace + Evolver 扩展
+### Workspace = Creator's Workspace + Evolver Extensions
 
-Creator 会在目标 skill 同级创建 `<skill-name>-workspace/`。Evolver 直接复用这个目录，在其中添加 evolve 相关的子目录。
+Creator creates `<skill-name>-workspace/` alongside the target skill. Evolver reuses that directory and adds evolve-specific subdirectories.
 
 ```
 some-project/
-├── my-skill/                       ← 目标 skill（用户的，git 管理）
+├── my-skill/                       ← target skill (user-owned, under git)
 │   ├── SKILL.md
 │   ├── references/
 │   └── scripts/
-└── my-skill-workspace/             ← 共享 workspace（Creator 和 Evolver 共用）
-    ├── evals/                      ← Creator 已有的评测数据
+└── my-skill-workspace/             ← shared workspace (Creator + Evolver)
+    ├── evals/                      ← Creator's evaluation data
     │   └── evals.json
-    ├── iteration-1/                ← Creator 的评测迭代（已有）
+    ├── iteration-1/                ← Creator's eval iterations (pre-existing)
     ├── iteration-2/
-    └── evolve/                     ← Evolver 专属子目录
-        ├── evolve_plan.md          ← 自适应优化计划
-        ├── results.tsv             ← 实验日志
-        ├── experiments.jsonl       ← 细粒度记忆
-        ├── best_versions/          ← 最优 skill 快照
-        ├── iteration-E1/           ← Evolve 评测产物（E 前缀区分 Creator）
+    └── evolve/                     ← Evolver-specific subdirectory
+        ├── evolve_plan.md          ← adaptive optimization plan
+        ├── results.tsv             ← experiment log
+        ├── experiments.jsonl       ← fine-grained memory
+        ├── best_versions/          ← best skill snapshots
+        ├── iteration-E1/           ← Evolve eval artifacts (E-prefix distinguishes from Creator)
         │   ├── grading.json
         │   ├── benchmark.json
         │   └── timing.json
-        └── summary.md              ← 最终报告
+        └── summary.md              ← final report
 ```
 
-**为什么共用 workspace：**
-- 打包 skill 时自然不打包（workspace 是同级独立目录，不在 skill 内）
-- Creator 的评测数据（evals/、iteration-N/）可被 Evolver 直接复用
-- 一个 skill 的所有优化历史集中在一处
+**Why a shared workspace:**
+- The workspace is a sibling directory, not inside the skill — it is naturally excluded when packaging
+- Creator's evaluation data (evals/, iteration-N/) can be reused directly by Evolver
+- All optimization history for a skill lives in one place
 
-### Workspace 发现
+### Workspace Discovery
 
-Evolver 按以下顺序寻找 workspace：
-1. `<skill-path>/../<skill-name>-workspace/`（Creator 标准位置）
-2. 用户通过 `--workspace` 参数指定
-3. 如果不存在，Evolver 自动创建（遵循 Creator 的命名惯例）
-
----
-
-## 自适应优化计划
-
-Evolver **不写死评测策略**。在开始优化前，会分析目标 skill 的特征，生成 `evolve_plan.md`：
-
-### Plan 生成过程
-
-1. 读取目标 skill 的 SKILL.md（识别 skill 类型和复杂度）
-2. 读取 GT 数据（识别 assertion 类型分布、数据量、split 分布）
-3. 基于以上信息生成 `evolve_plan.md`——详见 `references/eval_strategy.md` 获取模板和示例
+Evolver looks for the workspace in this order:
+1. `<skill-path>/../<skill-name>-workspace/` (Creator's standard location)
+2. User-specified via `--workspace`
+3. If none exists, Evolver creates one (following Creator's naming convention)
 
 ---
 
-## 模式详细说明
+## Adaptive Optimization Plan
 
-### Create 模式
+Evolver **does not hardcode evaluation strategy**. Before optimization begins, it analyzes the target skill and generates `evolve_plan.md`:
 
-调用 Creator 的创建流程 + 额外生成 GT 和 workspace。
+### Plan Generation Process
 
-**流程：**
-1. 读取 skill-creator 的 SKILL.md，按其 "Capture Intent → Interview → Write SKILL.md" 流程执行
-2. 生成初版 skill
-3. **额外步骤（Evolver 独有）：**
-   - 创建 evolve workspace
-   - 生成初始 GT 数据模板（trigger + behavior）
-   - 生成 evolve_plan.md
-4. 输出：完整 skill + workspace + 建议下一步（eval or evolve）
+1. Read the target skill's SKILL.md (identify skill type and complexity)
+2. Read the GT data (identify assertion type distribution, data volume, split distribution)
+3. Generate `evolve_plan.md` based on this analysis — see `references/eval_strategy.md` for templates and examples
 
-### Eval 模式
+---
 
-对指定 skill 跑一次独立评测，产出质量报告。不自动进入优化循环。
+## Mode Details
 
-**使用方式：**
+### Create Mode
+
+Invokes Creator's creation workflow + additionally generates GT and a workspace.
+
+**Workflow:**
+1. Read skill-creator's SKILL.md; follow its "Capture Intent -> Interview -> Write SKILL.md" flow
+2. Generate the initial skill
+3. **Additional steps (Evolver-specific):**
+   - Create the evolve workspace
+   - Generate an initial GT data template (trigger + behavior)
+   - Generate evolve_plan.md
+4. Output: complete skill + workspace + recommended next step (eval or evolve)
+
+### Eval Mode
+
+Run a single standalone evaluation against a skill, producing a quality report. Does not automatically enter the optimization loop.
+
+**Usage:**
 ```
 /skill-evolver eval <skill-path> [--gt <gt-data-path>]
 ```
 
-**流程：**
-1. 检查 workspace 是否存在，不存在则创建
-2. 如果有评测计划，读取评测策略；否则按默认策略（跑全部 dev case）
-3. 按策略执行评测：
-   - **Trigger 评测**：调用 skill-creator 的 `scripts/run_eval.py`（位于 Creator 安装目录下）
-   - **Behavior 评测**：spawn subagent 运行 skill，用 grader 打分
-4. 聚合结果，输出 benchmark
-5. 调用 Creator 的 `eval-viewer/generate_review.py` 展示结果
-6. 输出改进建议，但**不自动开始迭代**——用户决定下一步
+**Workflow:**
+1. Check if workspace exists; create it if not
+2. If an evaluation plan exists, read the strategy; otherwise use defaults (run all dev cases)
+3. Execute evaluation per the strategy:
+   - **Trigger evaluation**: call skill-creator's `scripts/run_eval.py` (in Creator's install directory)
+   - **Behavior evaluation**: spawn a subagent to run the skill, then grade with the grader
+4. Aggregate results, produce benchmark
+5. Call Creator's `eval-viewer/generate_review.py` to render results
+6. Output improvement suggestions, but **do not start iteration automatically** — the user decides next steps
 
-### Improve 模式
+### Improve Mode
 
-人主导定向改进。调用 Creator 的迭代流程。
+Human-directed targeted improvement. You (Claude) orchestrate the full cycle.
 
-**流程：**
-1. 读取用户的改进指令
-2. 读取当前 skill + 最近 eval 结果 + experiments.jsonl
-3. 按 Creator 的改进方法论做定向修改（参考 Creator SKILL.md "Improving the skill" 章节）
-4. 跑一轮 Eval 验证
-5. 输出对比：改前 vs 改后
+**Workflow:**
+1. Read the user's improvement instructions
+2. Read the current skill's SKILL.md + latest eval results + execution traces
+3. **Diagnose**: Read traces from the most recent eval (`evolve/iteration-E{N}/traces/`) to understand WHY specific cases fail
+4. **Plan**: Based on trace evidence, propose specific changes to the user (cite case IDs and trace evidence)
+5. **Apply**: Make the approved changes using the Edit tool (one atomic change at a time)
+6. **Verify**: Run one round of Eval (`python3 scripts/evolve_loop.py <skill> --gt <gt> --run --max-iterations 1`)
+7. **Report**: Show before/after comparison with per-case breakdown
 
-### Benchmark 模式
+**Key difference from Evolve mode**: The human decides WHAT to change; Improve mode provides diagnostic evidence and executes the change. Evolve mode decides autonomously.
 
-系统对比两个版本。
+### Benchmark Mode
 
-**使用方式：**
+Systematic comparison of two versions.
+
+**Usage:**
 ```
 /skill-evolver benchmark <skill-v1> <skill-v2> --gt <gt-data>
 ```
 
-**流程：**
-1. 对两个版本分别跑 eval
-2. 调用 skill-creator 的 `scripts/aggregate_benchmark.py` 聚合（位于 Creator 安装目录下）
-3. 可选：blind A/B comparison（读取本 skill 的 `agents/comparator_agent.md` 或 Creator 的完整版）
-4. 可选：归因分析（读取 Evolver 的 `agents/analyzer_agent.md`）
-5. 输出 benchmark 报告
+**Workflow:**
+1. Run eval on both versions
+2. Call skill-creator's `scripts/aggregate_benchmark.py` to aggregate (in Creator's install directory)
+3. Optional: blind A/B comparison (reads this skill's `agents/comparator_agent.md` or Creator's full version)
+4. Optional: attribution analysis (reads Evolver's `agents/analyzer_agent.md`)
+5. Output benchmark report
 
-### Evolve 模式（核心）
+### Evolve Mode (Core)
 
-自动循环优化。Evolver 的核心价值。
+Automated iterative optimization. The core value of Evolver.
 
-**使用方式：**
+**Usage:**
 ```
 /skill-evolver evolve <skill-path>
 ```
-用户可能说"优化这个 skill"并给出路径，也可能直接说"这里有一些测试数据"并提供文件。GT 数据不是必须参数——没有的话 evolver 会调用 Creator 自动构造。
+The user might say "optimize this skill" and provide a path, or "here's some test data" with a file. GT data is not a required argument — if missing, Evolver calls Creator to generate it automatically.
 
-**核心协议详见** `references/evolve_protocol.md`。
+**Full protocol:** see `references/evolve_protocol.md`.
 
-**简要流程：**
-
-```
-Phase 0: Setup    → 创建 workspace + 生成 evolve_plan + 建立 baseline
-Phase 1: Review   → 读 memory（results.tsv + experiments.jsonl + git log）
-Phase 2: Ideate   → 分析失败模式，决定改什么（读 agents/search_agent.md）
-Phase 3: Modify   → 做一个原子改动
-Phase 4: Commit   → git commit（如果在 git 管理下）
-Phase 5: Verify   → 按 evolve_plan 评测策略执行（调用 Creator 的评测能力）
-Phase 6: Gate     → 多门控判定 keep/discard/revert（读 references/gate_rules.md）
-Phase 7: Log      → 记录 results.tsv + experiments.jsonl（读 references/memory_schema.md）
-Phase 8: Loop     → 继续或结束
-```
-
-**分层优化策略：**
+**Summary of phases:**
 
 ```
-Layer 1: Description（触发优化）→ 调用 Creator 的 run_loop.py
-Layer 2: SKILL.md Body（行为优化）→ Evolver 自有能力
-Layer 3: Scripts/References（深层能力）→ Evolver 自有能力
+Phase 0: Setup    → Create workspace + generate evolve_plan + establish baseline
+Phase 1: Review   → Read memory (results.tsv + experiments.jsonl + git log)
+Phase 2: Ideate   → Analyze failure modes, decide what to change (read agents/search_agent.md)
+                     Uses active diagnosis with execution traces (Meta-Harness pattern):
+                     replay failing cases, collect execution traces, then apply
+                     counterfactual diagnosis to isolate root causes
+Phase 3: Modify   → Make one atomic change
+Phase 4: Commit   → git commit (mandatory — skill must be under git; if not, git init first)
+Phase 5: Verify   → Evaluate per evolve_plan strategy (calls Creator's evaluation capabilities)
+Phase 6: Gate     → Multi-gate keep/discard/revert decision (read references/gate_rules.md)
+Phase 7: Log      → Record to results.tsv + experiments.jsonl (read references/memory_schema.md)
+Phase 8: Loop     → Continue or terminate
 ```
 
-硬约束：一层改不动才进下一层。不允许跨层。详见 `references/mutation_policy.md`。
+**Layered optimization strategy:**
 
-**进入 Evolve 模式后，立即开始执行 loop。不要等用户指令，不要要求用户跑命令。** 你（Claude）就是执行者：
+```
+Layer 1: Description (trigger optimization) → call Creator's run_loop.py
+Layer 2: SKILL.md Body (behavior optimization) → Evolver's own capability
+Layer 3: Scripts/References (deep capability) → Evolver's own capability
+```
 
-1. 调用 `python3 scripts/setup_workspace.py <skill-path>` 创建 workspace
-2. **准备 GT 数据（调用 Creator 的能力）：**
-   - 检查 `<workspace>/evals/evals.json` 是否已存在 → 有就用
-   - 检查用户是否在对话中提供了数据（文件路径、QA 对、样本）→ 有就基于它构造
-   - 如果都没有 → **调用 skill-creator 的测试用例构造流程**：
-     - 读 Creator 的 SKILL.md 中 "Test Cases" 章节的方法论
-     - 按 Creator 流程：理解 skill → 写 realistic test prompts → 跑一遍 → draft assertions
-     - 保存到 `<workspace>/evals/evals.json`
-   - **不要自己发明构造方法** — Creator 的流程已经验证过，直接复用
-   - 如果用户给了部分数据（比如几个 QA 对），先用 Creator 流程把它们转为标准 GT 格式，再补充更多 case
-   - 每轮迭代中发现新边界情况时，同样用 Creator 的方法论补充 GT case
-3. 读 GT 数据，对 SKILL.md 做 baseline 评测，记录 baseline 到 results.tsv
-4. 开始循环：
-   - 读 memory → 分析失败 → 决定改什么 → 用 Edit 做原子改动 → git commit
-   - 跑 `python3 scripts/run_l1_gate.py <skill-path>` 验证
-   - 逐 case 逐 assertion 打分（L2 eval）
-   - 判定 keep/discard → 如果 discard 就 git revert
-   - 写 results.tsv + experiments.jsonl
-   - 判断是否继续
-4. 循环结束后输出 summary
+Hard constraint: only advance to the next layer when the current one plateaus. Cross-layer changes are not allowed. See `references/mutation_policy.md`.
 
-辅助工具（`scripts/` 里的脚本）帮你做确定性步骤，但**你自己推理决定改什么、怎么改**。
+**Once Evolve mode is entered, start executing the loop immediately. Do not wait for user instructions. Do not ask the user to run commands.** You (Claude) are the executor:
 
-如果需要在后台无人值守运行（不在对话中），可以用 CLI 模式：
+1. Call `python3 scripts/setup_workspace.py <skill-path>` to create the workspace
+2. **Prepare GT data (using Creator's capabilities):**
+   - Check if `<workspace>/evals/evals.json` already exists -> use it if so
+   - Check if the user provided data in the conversation (file paths, QA pairs, samples) -> construct GT from it
+   - If neither exists -> **invoke skill-creator's test case generation workflow**:
+     - Read the "Test Cases" section of Creator's SKILL.md for methodology
+     - Follow Creator's flow: understand skill -> write realistic test prompts -> run once -> draft assertions
+     - Save to `<workspace>/evals/evals.json`
+   - **Do not invent your own construction method** — Creator's workflow is battle-tested; reuse it directly
+   - If the user provided partial data (e.g., a few QA pairs), first convert them to standard GT format via Creator's workflow, then generate additional cases
+   - When new edge cases are discovered during iteration, supplement the GT using Creator's methodology
+3. Read GT data, run baseline evaluation on the SKILL.md, record baseline to results.tsv
+4. Begin the loop:
+   - Read memory -> analyze failures -> decide what to change -> make atomic edit with Edit -> git commit
+   - Run `python3 scripts/run_l1_gate.py <skill-path>` for verification
+   - Grade each case and assertion individually (L2 eval)
+   - Decide keep/discard -> if discard, git revert
+   - Write results.tsv + experiments.jsonl
+   - Decide whether to continue
+5. Output summary when the loop terminates
+6. **Launch the eval viewer for human review**: After the loop completes (and after holdout eval + cleanup), `evolve_loop.py` automatically calls Creator's `eval-viewer/generate_review.py` to render a static HTML review at `<workspace>/evolve/review.html`. The user opens this file to see the per-iteration trajectory, per-case grades, and best-version diff. This is the final hand-off to the human.
+
+Helper scripts (in `scripts/`) handle deterministic steps, but **you reason about what to change and how**.
+
+For unattended background execution (outside a conversation), use CLI mode:
 ```bash
 python3 scripts/evolve_loop.py <skill-path> --gt <gt-json> --run --max-iterations 20
 ```
-这个通过 the LLM CLI 子进程实现 LLM 推理。但**默认场景是你在对话中直接执行 loop**。
+This uses `claude -p` subprocesses for LLM reasoning. But **the default scenario is you executing the loop directly in conversation**.
 
-清理中间产物：
+Cleanup intermediate artifacts:
 ```bash
 python3 scripts/evolve_loop.py <skill-path> --cleanup
 python3 scripts/evolve_loop.py <skill-path> --cleanup-versions
@@ -262,73 +290,79 @@ python3 scripts/evolve_loop.py <skill-path> --cleanup-versions
 
 ---
 
-## GT 数据格式
+## GT Data Format
 
-GT schema 分通用层和场景扩展层，确保 skill-evolver 适用于所有类型的 skill。
+The GT schema has a universal layer and scenario-specific extension layers, ensuring skill-evolver works with all skill types.
 
-### 通用层（必须遵循）
+### Universal Layer (mandatory)
 
 ```json
 {
   "id": 1,
-  "prompt": "用户的输入",
+  "prompt": "The user's input",
   "assertions": [
-    {"type": "contains", "value": "关键内容", "description": "必须包含X"}
+    {"type": "contains", "value": "key content", "description": "Must include X"}
+  ],
+  "facts": [
+    "Fact point 1 that must be covered",
+    "Fact point 2 that must be covered"
   ],
   "split": "dev",
   "metadata": {}
 }
 ```
 
-### 通用断言类型
+The `facts` field is used with `fact_coverage` assertions in preset mode. During fact decomposition, each fact point is extracted as an atomic, independently verifiable statement. The grader checks coverage by performing binary YES/NO judgments per fact point, and the program computes the coverage score.
 
-| type | 说明 |
+### Universal Assertion Types
+
+| type | Description |
 |---|---|
-| `contains` | 输出包含指定文本 |
-| `not_contains` | 输出不能包含指定文本 |
-| `regex` | 输出匹配正则 |
-| `path_hit` | 引用了正确的文档路径 |
-| `fact_coverage` | 覆盖了指定关键事实点 |
-| `script_check` | 运行脚本检查输出 |
-| `json_schema` | 输出符合 JSON schema |
-| `file_exists` | 生成了指定文件 |
+| `contains` | Output contains the specified text |
+| `not_contains` | Output must not contain the specified text |
+| `regex` | Output matches the regular expression |
+| `path_hit` | Output references the correct document path |
+| `fact_coverage` | Output covers specified fact points (uses the `facts` field) |
+| `script_check` | Run a script to check the output |
+| `json_schema` | Output conforms to a JSON schema |
+| `file_exists` | A specified file was generated |
 
-### split 字段
+### Split Field
 
-必须标注 `"dev"` / `"holdout"` / `"regression"`。分组策略在 evolve_plan.md 中定义。
-
----
-
-## 门控规则
-
-详见 `references/gate_rules.md`。
-
-核心原则：**所有 Keep 条件必须同时满足（AND 逻辑）**。门控阈值在 evolve_plan.md 中 per-skill 定义。
+Must be labeled `"dev"` / `"holdout"` / `"regression"`. Split strategy is defined in evolve_plan.md.
 
 ---
 
-## Memory 结构
+## Gate Rules
 
-详见 `references/memory_schema.md`。
+See `references/gate_rules.md` for details.
 
-Memory 存储在目标 skill 的 workspace `evolve/` 子目录中，不在 evolver 自身目录中：
-- `<workspace>/evolve/results.tsv`：实验日志
-- `<workspace>/evolve/experiments.jsonl`：细粒度记忆
-- `<workspace>/evolve/best_versions/`：历史最优快照
+Core principle: **All keep conditions must be satisfied simultaneously (AND logic)**. Gate thresholds are defined per-skill in evolve_plan.md.
 
 ---
 
-## Reference 文件索引
+## Memory Structure
 
-| 文件 | 内容 | 何时读取 |
+See `references/memory_schema.md` for details.
+
+Memory is stored in the target skill's workspace under the `evolve/` subdirectory — not in Evolver's own directory:
+- `<workspace>/evolve/results.tsv`: experiment log
+- `<workspace>/evolve/experiments.jsonl`: fine-grained memory
+- `<workspace>/evolve/best_versions/`: historical best snapshots
+
+---
+
+## Reference File Index
+
+| File | Contents | When to Read |
 |---|---|---|
-| `references/evolve_protocol.md` | Evolve 8 阶段完整协议 | 进入 Evolve 模式时 |
-| `references/eval_strategy.md` | 自适应评测策略模板 | 生成 evolve_plan 时 |
-| `references/gate_rules.md` | 多门控规则 + 伪代码 | Gate 判定时 |
-| `references/mutation_policy.md` | 分层 mutation 策略 | 决定改什么时 |
-| `references/memory_schema.md` | results.tsv + experiments.jsonl schema | 读写 memory 时 |
-| `references/creator_integration.md` | 与 Creator 的联动协议 | 需要调用 Creator 能力时 |
-| `agents/search_agent.md` | 变体生成协议 | Phase 2 Ideate 时 |
-| `agents/grader_agent.md` | 评分协议（快速参考，完整版见 Creator） | 评测打分时 |
-| `agents/comparator_agent.md` | 盲 A/B 比较（快速参考，完整版见 Creator） | Benchmark 模式时 |
-| `agents/analyzer_agent.md` | 归因分析协议 | 分析改动效果时 |
+| `references/evolve_protocol.md` | Full 8-phase Evolve protocol | On entering Evolve mode |
+| `references/eval_strategy.md` | Adaptive evaluation strategy templates | When generating evolve_plan |
+| `references/gate_rules.md` | Multi-gate rules + pseudocode | During gate decisions |
+| `references/mutation_policy.md` | Layered mutation strategy | When deciding what to change |
+| `references/memory_schema.md` | results.tsv + experiments.jsonl schema | When reading/writing memory |
+| `references/creator_integration.md` | Integration protocol with Creator | When invoking Creator capabilities |
+| `agents/search_agent.md` | Variant generation protocol | During Phase 2 (Ideate) |
+| `agents/grader_agent.md` | Grading protocol (quick ref; full version in Creator) | During evaluation grading |
+| `agents/comparator_agent.md` | Blind A/B comparison (quick ref; full version in Creator) | During Benchmark mode |
+| `agents/analyzer_agent.md` | Attribution analysis protocol | When analyzing change effects |

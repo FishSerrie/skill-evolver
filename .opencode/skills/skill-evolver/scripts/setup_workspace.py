@@ -83,43 +83,56 @@ def setup_workspace(skill_path: Path, workspace: Path | None = None) -> dict:
 > Skill: {name}
 > Description: {description[:100]}...
 
-## Skill 分析
-- 类型：TODO — 分析 SKILL.md 确定
-- 复杂度：TODO
-- GT 数据：{gt_info}
-- 关键 assertion 类型：TODO
+## Evaluation Philosophy
 
-## 评测策略
+LLM does binary classification only; programs do all scoring.
+Same classification always produces the same score.
 
-### Quick Gate（每轮必跑）
-- YAML frontmatter 语法检查
-- trigger 抽样 3 条
-- hard assertion 抽样 2 条核心 dev case
+Assertion types:
+- Program-only: contains, not_contains, regex, file_exists, json_schema, script_check
+- LLM binary (YES/NO): path_hit, fact_coverage
 
-### Dev Eval（每轮跑）
-- 跑 dev split 全部 case
-- 重点关注：TODO
-- 调用 Creator 的 grader 协议打分
+## Skill Analysis
+- Type: TODO — analyze SKILL.md to determine
+- Complexity: TODO
+- GT data: {gt_info}
+- Key assertion types: TODO
 
-### Strict Eval（触发条件）
-- 每 5 轮自动触发
-- 或 dev pass_rate 超过 baseline + 10% 时
-- 跑 holdout + regression
+## Evaluation Strategy
 
-## 优化优先级
-1. Layer 2 (Body)：TODO
+### Quick Gate (every iteration)
+- YAML frontmatter syntax check
+- Trigger sampling: 3 cases
+- Hard assertion sampling: 2 core dev cases
+
+### Dev Eval (every iteration)
+- Run all dev split cases
+- Focus areas: TODO
+- Use binary LLM judge for semantic assertions
+
+### Strict Eval (triggered conditionally)
+- Auto-trigger every 5 iterations
+- Or when dev pass_rate exceeds baseline + 10%
+- Run holdout + regression sets
+- Anti-Goodhart: holdout cases never exposed to proposer
+
+evaluator: local
+model:
+
+## Optimization Priority
+1. Layer 2 (Body): TODO
 2. TODO
 
-## 门控阈值
+## Gate Thresholds
 - min_delta: 0.02
 - trigger_tolerance: 0.05
 - max_token_increase: 0.20
 - regression_tolerance: 0.05
 
-## 终止条件
+## Termination Conditions
 - max_iterations: 20
-- stuck_threshold: 连续 5 轮 discard
-- exhaustion: 3 层都尝试后无提升
+- stuck_threshold: 5 consecutive discards
+- exhaustion: all 3 layers attempted with no improvement
 
 ---
 *This is a template. Claude should analyze the skill and GT data to fill in TODOs before starting evolve.*

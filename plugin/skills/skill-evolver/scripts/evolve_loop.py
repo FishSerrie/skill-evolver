@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from common import find_creator_path, find_workspace, find_evolve_dir, validate_frontmatter
+from common import require_creator, CreatorNotFoundError, find_workspace, find_evolve_dir, validate_frontmatter, parse_skill_md
 from aggregate_results import parse_results_tsv, calculate_summary
 from evaluators import get_evaluator, parse_evaluator_from_plan, Evaluator
 
@@ -768,6 +768,11 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
     log(f"Evaluator: {evaluator.info()}")
     log("=" * 60)
 
+    # Creator dependency check (fail fast)
+    log("Checking skill-creator dependency...")
+    creator_path = require_creator()
+    log(f"Creator found: {creator_path}")
+
     # Phase 0: Setup
     log("Phase 0: Setup")
     setup = phase_0_setup(skill_path, gt_path, workspace)
@@ -910,6 +915,11 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
 
     cleanup_best_versions(workspace, keep_n=3)
 
+    # Try to launch Creator's eval viewer if available
+    viewer_launched = _try_launch_eval_viewer(workspace, skill_path)
+    if viewer_launched:
+        log("Eval viewer launched — open the URL above to review results")
+
     return {
         "baseline_rate": baseline_rate,
         "best_rate": best_rate,
@@ -917,7 +927,62 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
         "iterations": final_summary["total_iterations"],
         "keeps": final_summary["keep_count"],
         "discards": final_summary["discard_count"],
+        "viewer_launched": viewer_launched,
     }
+
+
+# ─────────────────────────────────────────────
+# Eval Viewer Integration
+# ─────────────────────────────────────────────
+
+def _try_launch_eval_viewer(workspace: Path, skill_path: Path) -> bool:
+    """Try to launch Creator's eval viewer (generate_review.py) if available.
+
+    Generates a static HTML review of the evolution results.
+    Returns True if viewer was launched successfully.
+    """
+    creator_path = require_creator()
+
+    viewer_script = creator_path / "eval-viewer" / "generate_review.py"
+    if not viewer_script.exists():
+        return False
+
+    # Parse skill name for the viewer
+    try:
+        name, _, _ = parse_skill_md(skill_path)
+    except (ValueError, FileNotFoundError):
+        name = skill_path.name
+
+    # Find the latest benchmark file
+    evolve_dir = workspace / "evolve"
+    benchmark_path = None
+    for d in sorted(evolve_dir.iterdir(), reverse=True):
+        if d.is_dir() and d.name.startswith("iteration-E"):
+            bp = d / "benchmark.json"
+            if bp.exists():
+                benchmark_path = bp
+                break
+
+    try:
+        cmd = [
+            sys.executable, str(viewer_script),
+            str(workspace),
+            "--skill-name", name,
+            "--static", str(workspace / "evolve" / "review.html"),
+        ]
+        if benchmark_path:
+            cmd.extend(["--benchmark", str(benchmark_path)])
+
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode == 0:
+            print(f"Review saved: {workspace / 'evolve' / 'review.html'}",
+                  file=sys.stderr)
+            return True
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+    return False
 
 
 # ─────────────────────────────────────────────
@@ -1020,6 +1085,93 @@ def cleanup_eval_outputs(workspace: Path, keep_recent: int = 5) -> list[str]:
 
 
 # ─────────────────────────────────────────────
+# GT Auto-Construction
+# ─────────────────────────────────────────────
+
+def auto_construct_gt(skill_path: Path, output_path: Path,
+                      model: str | None = None) -> dict | None:
+    """Auto-construct GT data by analyzing the skill's SKILL.md.
+
+    Uses LLM to read the skill and generate realistic test cases
+    with assertions. Saves to output_path as evals.json.
+
+    This follows the Creator's test case construction methodology:
+    understand skill → write realistic test prompts → draft assertions.
+
+    Returns: {"count": int} on success, None on failure.
+    """
+    skill_md = skill_path / "SKILL.md"
+    if not skill_md.exists():
+        return None
+
+    skill_content = skill_md.read_text()
+    if len(skill_content.strip()) < 50:
+        return None  # SKILL.md too short to auto-construct GT from
+
+    prompt = f"""You are generating ground-truth test data for evaluating a skill.
+
+Read this SKILL.md and generate 8 test cases (6 dev + 2 holdout):
+
+{skill_content[:6000]}
+
+For each test case, create realistic user prompts that would trigger this skill,
+and assertions that check whether the SKILL.md content properly addresses them.
+
+Use these assertion types:
+- "contains": SKILL.md must contain this text (case-insensitive)
+- "not_contains": SKILL.md must NOT contain this text
+- "regex": SKILL.md must match this regex pattern
+
+Output EXACTLY this JSON format (no other text):
+{{
+  "evals": [
+    {{
+      "id": 1,
+      "prompt": "realistic user prompt",
+      "assertions": [
+        {{"type": "contains", "value": "expected text", "description": "what this checks"}}
+      ],
+      "split": "dev",
+      "metadata": {{"note": "why this case matters"}}
+    }}
+  ]
+}}
+
+Requirements:
+- 6 cases with "split": "dev", 2 cases with "split": "holdout"
+- Each case should test a different aspect of the skill
+- Include at least one not_contains assertion (negative test)
+- Make prompts realistic (how a real user would trigger this skill)
+- Assertions should check that SKILL.md has the right instructions
+"""
+
+    response = _call_llm(prompt, model=model, timeout=180)
+
+    # Parse JSON from response
+    for line in response.split("\n"):
+        line = line.strip()
+        if line.startswith("{") and '"evals"' in line:
+            try:
+                data = json.loads(line)
+                output_path.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+                return {"count": len(data.get("evals", []))}
+            except json.JSONDecodeError:
+                pass
+
+    # Try to find JSON block in the full response
+    json_match = re.search(r'\{[\s\S]*"evals"[\s\S]*\}', response)
+    if json_match:
+        try:
+            data = json.loads(json_match.group())
+            output_path.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+            return {"count": len(data.get("evals", []))}
+        except json.JSONDecodeError:
+            pass
+
+    return None
+
+
+# ─────────────────────────────────────────────
 # Main (reference CLI)
 # ─────────────────────────────────────────────
 
@@ -1043,8 +1195,14 @@ def main():
     parser.add_argument("--info", action="store_true")
     parser.add_argument("--cleanup", action="store_true")
     parser.add_argument("--cleanup-versions", action="store_true")
+    parser.add_argument("--creator-path", type=Path, default=None,
+                        help="Path to skill-creator installation (overrides auto-discovery)")
     parser.add_argument("--verbose", action="store_true", default=True)
     args = parser.parse_args()
+
+    # Set creator path override via env var (picked up by require_creator())
+    if args.creator_path:
+        os.environ["SKILL_CREATOR_PATH"] = str(args.creator_path.resolve())
 
     ws = args.workspace or find_workspace(args.skill_path)
 
@@ -1083,11 +1241,21 @@ def main():
                 print(f"Auto-discovered GT data: {candidate}", file=sys.stderr)
                 break
         if not args.gt:
-            print("Error: No GT data found. Provide --gt or place evals.json in:",
+            # Auto-construct GT using LLM to analyze the skill
+            gt_target = ws / "evals" / "evals.json"
+            gt_target.parent.mkdir(parents=True, exist_ok=True)
+            print("No GT data found. Auto-constructing from SKILL.md...",
                   file=sys.stderr)
-            for c in candidates:
-                print(f"  {c}", file=sys.stderr)
-            sys.exit(1)
+            gt_result = auto_construct_gt(args.skill_path, gt_target,
+                                          model=args.model)
+            if gt_result:
+                args.gt = gt_target
+                print(f"Generated {gt_result['count']} test cases → {gt_target}",
+                      file=sys.stderr)
+            else:
+                print("Error: GT auto-construction failed. Provide --gt manually.",
+                      file=sys.stderr)
+                sys.exit(1)
 
     # Build evaluator from CLI args or evolve_plan.md
     eval_config = {}
@@ -1103,6 +1271,14 @@ def main():
     evaluator_instance = None
     if eval_config.get("evaluator"):
         evaluator_instance = get_evaluator(eval_config)
+
+    # Verify creator is available before doing any real work
+    try:
+        creator = require_creator()
+        print(f"skill-creator found: {creator}", file=sys.stderr)
+    except CreatorNotFoundError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(2)
 
     if args.run:
         # THE REAL LOOP

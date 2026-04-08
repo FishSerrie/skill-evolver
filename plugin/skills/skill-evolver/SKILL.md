@@ -1,6 +1,6 @@
 ---
 name: skill-evolver
-description: "Skill 自动进化引擎 — 基于 skill-creator 评测能力 + autoresearch 自主迭代思想，自动创建、评测、迭代优化 skill。内核：Creator 做评测打分，AutoResearch 式循环做搜索优化，Evolver 加门控和记忆实现全自动进化。支持 evolve/eval/create/benchmark/improve 五种模式。Triggers on: '/skill-evolver', 'evolve skill', '进化 skill', '优化 skill', 'skill 评测', 'eval skill', 'skill benchmark', '让 skill 变强', '自动优化', 'improve skill', '改进 skill', 'create skill', '创建 skill', 'skill evolver'."
+description: "Automatic skill evolution engine — powered by skill-creator's evaluation capabilities + autoresearch's autonomous iteration methodology. Core: Creator handles evaluation and grading, AutoResearch-style loop handles search and optimization, Evolver adds gating and memory for fully automatic evolution. Supports evolve/eval/create/benchmark/improve modes. Triggers on: '/skill-evolver', 'evolve skill', 'optimize skill', 'skill eval', 'skill benchmark', 'make skill better', 'auto-optimize', 'improve skill', 'create skill', 'skill evolver', '进化 skill', '优化 skill', 'skill 评测', '让 skill 变强', '自动优化', '改进 skill', '创建 skill'."
 ---
 
 # Skill Evolver
@@ -24,9 +24,31 @@ python3 scripts/evolve_loop.py ./my-skill/ --gt ./evals.json --run --max-iterati
 ```
 
 **Prerequisites:**
+- **skill-creator installed (hard dependency)** — Evolver refuses to start without it. See installation guide below.
 - GT data (test cases + assertions) should be prepared in advance; if unavailable, evolve mode auto-generates them via Creator
 - The skill directory **must be under git** (if uninitialized, Phase 0 forces `git init`; if git is not installed, install it first)
-- skill-creator is installed (provides evaluation capabilities)
+
+### Installing skill-creator
+
+skill-creator is a hard dependency. If it is not found, Evolver errors out with these instructions. Install in one of three ways:
+
+1. **Plugin marketplace (recommended):** In Claude Code, run `/install skill-creator`
+
+2. **Manual install from GitHub:**
+   ```bash
+   git clone https://github.com/anthropics/skills.git /tmp/anthropic-skills-latest
+   cp -r /tmp/anthropic-skills-latest/skills/skill-creator ~/.claude/skills/skill-creator
+   ```
+   Source: https://github.com/anthropics/skills/tree/main/skills/skill-creator
+
+3. **Already installed at a custom path?**
+   ```bash
+   export SKILL_CREATOR_PATH=/your/path/to/skill-creator
+   # or pass via CLI:
+   python3 scripts/evolve_loop.py ./my-skill --gt ./evals.json --run --creator-path /your/path
+   ```
+
+See `references/creator_integration.md` Section 3 for the full path discovery order.
 
 ---
 
@@ -49,7 +71,7 @@ python3 scripts/evolve_loop.py ./my-skill/ --gt ./evals.json --run --max-iterati
 - When Creator updates, Evolver benefits automatically
 - See `references/creator_integration.md` for details
 
-**Creator path discovery order:** See Section 3 of `references/creator_integration.md`. Multiple locations are searched in priority order; fallback / graceful degradation applies when none are found.
+**Creator path discovery order:** See Section 3 of `references/creator_integration.md`. Multiple locations are searched in priority order. If none are found, Evolver errors out with installation instructions — there is no silent degradation.
 
 ---
 
@@ -250,6 +272,7 @@ Hard constraint: only advance to the next layer when the current one plateaus. C
    - Write results.tsv + experiments.jsonl
    - Decide whether to continue
 5. Output summary when the loop terminates
+6. **Launch the eval viewer for human review**: After the loop completes (and after holdout eval + cleanup), `evolve_loop.py` automatically calls Creator's `eval-viewer/generate_review.py` to render a static HTML review at `<workspace>/evolve/review.html`. The user opens this file to see the per-iteration trajectory, per-case grades, and best-version diff. This is the final hand-off to the human.
 
 Helper scripts (in `scripts/`) handle deterministic steps, but **you reason about what to change and how**.
 

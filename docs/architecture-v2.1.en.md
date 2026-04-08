@@ -48,11 +48,11 @@ Build a single-entry-point Skill Evolver that:
 
 ---
 
-## 3. Relationship with Skill Creator (new in v2.1)
+## 3. Relationship with Skill Creator (hard dependency)
 
-### Core Principle: Reference, Don't Copy
+### Core Principle: Reference, Don't Copy — Creator is a Hard Dependency
 
-The Evolver invokes Creator capabilities by reference. When Creator ships an update, the Evolver inherits it automatically -- zero duplication, zero drift.
+The Evolver invokes Creator capabilities by reference. When Creator ships an update, the Evolver inherits it automatically -- zero duplication, zero drift. **There is no fallback path.** If Creator is missing, `require_creator()` raises `CreatorNotFoundError` at startup with installation instructions.
 
 | Dimension | Skill Creator | Skill Evolver | Relationship |
 |---|---|---|---|
@@ -62,20 +62,41 @@ The Evolver invokes Creator capabilities by reference. When Creator ships an upd
 | Benchmark | Yes: blind A/B | Yes (same) | Calls Creator |
 | Evolve | No | Yes (core) | **New** |
 | Gate | No | Yes: multi-gate AND logic | **New** |
-| Memory | No | Yes: results.tsv + experiments.jsonl | **New** |
+| Memory | No | Yes: results.tsv + experiments.jsonl + traces | **New** |
 
-### Creator Path Discovery
+### Creator Path Discovery (`scripts/common.py:find_creator_path`)
 
 ```python
-SEARCH_ORDER = [
-    "~/.claude/plugins/marketplaces/*/plugins/skill-creator/",
-    "~/.claude/plugins/skill-creator/plugin/skills/skill-creator/",
+# Priority 0: user override via environment variable
+os.environ.get("SKILL_CREATOR_PATH")
+
+CREATOR_SEARCH_PATHS = [
+    "~/.claude/plugins/marketplaces/*/plugins/skill-creator/skills/skill-creator/",
     "~/.claude/skills/skill-creator/",
     ".claude/skills/skill-creator/",
+    "/tmp/anthropic-skills-latest/skills/skill-creator/",
 ]
 ```
 
-**Fallback**: when Creator is unavailable the Evolve core loop is unaffected. Evaluation falls back to the built-in `LocalEvaluator` (see Section 4c).
+**No fallback. No silent degradation.** When Creator is not found:
+
+```python
+from common import require_creator, CreatorNotFoundError
+try:
+    creator = require_creator()  # caches the result after first resolution
+except CreatorNotFoundError as e:
+    # Error message includes:
+    # - The GitHub URL: https://github.com/anthropics/skills/tree/main/skills/skill-creator
+    # - Three install methods (plugin marketplace, manual git clone, env var)
+    # - The complete list of paths that were searched
+    print(e); sys.exit(2)
+```
+
+Users with Creator installed at a non-standard location can specify the path via:
+- Environment variable: `export SKILL_CREATOR_PATH=/custom/path`
+- CLI argument on `evolve_loop.py`: `--creator-path /custom/path`
+
+**Why hard dependency rather than fallback**: keeping a copy of Creator's grader / comparator inside Evolver causes version drift the moment Creator updates its protocol. By requiring Creator at runtime, every Evolver run uses Creator's latest grading/comparison logic. Evolver's `agents/grader_agent.md` and `agents/comparator_agent.md` are now pointer files that read Creator's full versions via `get_creator_agent_path()`.
 
 ---
 
@@ -391,19 +412,42 @@ Total: 18 skill files, ~2700 lines
 
 ---
 
-## 14. Bootstrap Test Results
+## 14. Self-Iteration Test Results (latest run)
 
-Executed 2026-04-07 (bootstrapping: evolving the evolver itself):
+Executed 2026-04-08 -- skill-evolver evolving itself using the **real `evaluators.py` framework** with an **isolated workspace git** (commits do not pollute the project repo).
 
-- **5 manual iterations** (not the automated loop -- the evolver itself was not yet git-managed)
-- **Improvements landed**: quick start, self-contained eval, CLI execution guide, plan-example streamlining
-- **316 lines** (down from 344)
-- **Key finding**: protocol-type skills require behavioral evaluation (spawn subagent). Static string matching hits a hard ceiling.
-- **All scripts verified**: L1 gate PASS, all functions independently callable
+### Setup
+- **Target**: `plugin/skills/skill-evolver/` copied to `plugin/skills/skill-evolver-workspace/working-skill/` (isolated git)
+- **GT**: 10 cases (8 dev + 2 holdout), 45 assertions covering all 3 pillars + integration
+- **Evaluator**: `LocalEvaluator` from `evaluators.py` (real framework, not ad-hoc Python)
+- **Creator**: resolved via `require_creator()` to plugin marketplace path
+
+### Trajectory
+
+| Iteration | Workspace commit | Dev metric | Δ | Decision | Layer |
+|---|---|---|---|---|---|
+| 0 | `630c764` | 88.9% (32/36) | — | baseline | — |
+| 1 | `7a35129` | 94.4% (34/36) | +5.6% | **KEEP** | body |
+| 2 | `8e37edb` | 97.2% (35/36) | +2.8% | **DISCARD** | body |
+| 2-revert | `256cb93` | (rolled back to 94.4%) | — | git revert | — |
+| 3 | `f9e5bce` | 100.0% (36/36) | +5.6% | **KEEP** | body |
+
+### Key Validations
+
+- **Real keep/discard/revert**: Iteration 2 was genuinely discarded (delta below `min_delta=0.05` threshold) and reverted via `git revert HEAD --no-edit` in the workspace git. Iteration 3 then bundled the reverted change with another fix to clear the gate. This is real adaptive search, not "edit and forget".
+- **Real framework usage**: All assertions evaluated through `LocalEvaluator._evaluate_assertion()`. L1 gate called Creator's `quick_validate.py` via subprocess (returned "Skill is valid!").
+- **Workspace git isolation**: All experiment commits land in `plugin/skills/skill-evolver-workspace/working-skill/.git`. The project git is unchanged during the loop.
+- **Eval viewer**: Creator's `eval-viewer/generate_review.py` rendered a 97 KB HTML review at `evolve/review.html` covering all 4 iterations × 8 dev cases.
+- **Three pillars verified**: Creator hard dependency (cases 1-3, 9), AutoResearch loop (cases 4, 5, 10), Meta-Trace diagnosis (cases 6, 7), eval viewer integration (case 8).
+
+### Holdout
+- **Holdout**: 88.9% (8/9 assertions, 1/2 cases). The single holdout failure is a GT design issue (full-corpus scoping vs file-scoped assertion), **not** a skill defect. Per `gate_rules.md` Anti-Goodhart principle ("holdout cases never exposed to proposer"), iteration did not chase this failure.
+
+Full report: `docs/bootstrap-report.md`.
 
 ---
 
 *Document version: v2.1*
-*Date: 2026-04-07*
-*Status: Architecture refactoring complete + scripts implemented + bootstrap test passed + GitHub repo structure finalized*
+*Date: 2026-04-08*
+*Status: Creator hard-dependency refactor complete + self-iteration validated with real framework and isolated workspace git*
 *Previous version: v1.1 (2026-04-03)*
