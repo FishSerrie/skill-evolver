@@ -30,7 +30,7 @@
 Each `iteration-E{N}/traces/` directory stores raw execution traces for that iteration's evaluation. Traces are the primary diagnostic input for Phase 1 (Review) and Phase 2 (Ideate).
 
 Contents:
-- One trace file per evaluated case (e.g., `case-003.trace.md`)
+- One trace file per evaluated case (e.g., `iteration-E{N}/traces/case_3.md`)
 - Each trace captures: the prompt sent, the full LLM output, assertion results, and any error/crash output
 - Traces for failed cases are the most important -- they are the evidence base for counterfactual diagnosis
 

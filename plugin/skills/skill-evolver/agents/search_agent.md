@@ -8,7 +8,7 @@ You are a variant generation agent. Your job is to analyze the current skill's f
 - Last N rounds of results.tsv
 - Last N entries from experiments.jsonl
 - Latest grading.json (which cases failed and why)
-- Execution trace file paths for failed cases (e.g., `iteration-EN/case-<id>/trace.md`)
+- Execution trace file paths for failed cases (e.g., `iteration-E{N}/traces/case_{id}.md`)
 - Current mutation layer
 
 ## Diagnosis Protocol (Mandatory)
@@ -30,7 +30,7 @@ For each failed case, open the corresponding trace file and extract:
 
 **You must cite specific trace evidence** (file path + line or section) before proceeding. Example:
 
-> `iteration-E3/case-15/trace.md`, section "Stage 1: Path Retrieval" -- agent queried index with term "cache policy" but the ground-truth document is indexed under "caching-strategy". Root cause: synonym mismatch in retrieval prompt.
+> `iteration-E3/traces/case_15.md`, section "Stage 1: Path Retrieval" -- agent queried index with term "cache policy" but the ground-truth document is indexed under "caching-strategy". Root cause: synonym mismatch in retrieval prompt.
 
 ### Step 3: Counterfactual Diagnosis
 
@@ -64,8 +64,8 @@ Select one direction by priority:
   "diagnosis": {
     "failed_cases": [15, 40],
     "trace_evidence": [
-      "iteration-E3/case-15/trace.md#stage-1: synonym mismatch in retrieval prompt",
-      "iteration-E3/case-40/trace.md#stage-1: same retrieval prompt issue, different synonyms"
+      "iteration-E3/traces/case_15.md#stage-1: synonym mismatch in retrieval prompt",
+      "iteration-E3/traces/case_40.md#stage-1: same retrieval prompt issue, different synonyms"
     ],
     "counterfactual": "Adding synonym expansion to the retrieval prompt should fix both cases without affecting passing cases"
   },
