@@ -1,6 +1,6 @@
 # Evolve Plan for: skill-evolver
 
-> Generated: 2026-04-08 02:47 UTC
+> Generated: 2026-04-08 03:08 UTC
 > Skill: skill-evolver
 > Description: Skill 自动进化引擎 — 基于 skill-creator 评测能力 + autoresearch 自主迭代思想，自动创建、评测、迭代优化 skill。内核：Creator 做评测打分，AutoR...
 
@@ -57,7 +57,3 @@ model:
 
 ---
 *This is a template. Claude should analyze the skill and GT data to fill in TODOs before starting evolve.*
-
-## Creator Configuration
-creator_path: /Users/serriezhang/.claude/plugins/marketplaces/claude-plugins-official/plugins/skill-creator/skills/skill-creator
-creator_name: skill-creator
