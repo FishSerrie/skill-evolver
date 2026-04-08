@@ -70,10 +70,14 @@ class BinaryLLMJudge:
         self._call_llm = None  # lazy import to avoid circular dependency
 
     def _get_llm_caller(self):
-        """Lazy import of _call_llm from evolve_loop to avoid circular imports."""
+        """Lazy import of _call_llm from llm module to avoid circular imports.
+
+        Falls back to a self-contained CLI-detecting implementation if
+        scripts/llm.py isn't importable (standalone copies of this file).
+        """
         if self._call_llm is None:
             try:
-                from evolve_loop import _call_llm
+                from llm import _call_llm
                 self._call_llm = _call_llm
             except ImportError:
                 # Fallback: inline implementation for standalone use
