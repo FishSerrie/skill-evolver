@@ -99,70 +99,20 @@ Every skill has different characteristics (type, GT data volume, assertion type 
 
 ---
 
-## Strategy Examples by Skill Type
+## Tuning Heuristics
 
-### Customer Service / Knowledge Base QA Skill
+Concrete thresholds depend on the skill and the GT; the proposer should
+tune them using these rules of thumb:
 
-```markdown
-## Evaluation Strategy
-### Quick Gate
-- Trigger sample: 5 cases
-- Hard assertion: sample 2 fact_coverage cases
-
-### Dev Eval (every iteration)
-- Run dev split: 15 cases
-- Focus areas: fact_coverage (recall), path_hit (retrieval precision)
-
-## Optimization Priorities
-1. Layer 2 (Body): trigger already at 0.95, skip Layer 1
-2. Focus: improve cross-category retrieval rules
-
-## Gate Thresholds
-- min_delta: 0.03 (GT has only 15 cases; relax threshold to reduce noise)
-- max_token_increase: 0.25 (responses tend to be long; relax)
-```
-
-### Code Generation Skill
-
-```markdown
-## Evaluation Strategy
-### Quick Gate
-- Trigger sample: 3 cases
-- Hard assertion: run 1 script_check case
-
-### Dev Eval (every iteration)
-- Run dev split: 8 cases
-- Focus areas: script_check (code correctness), file_exists (output completeness)
-
-## Optimization Priorities
-1. Layer 3 (Scripts): core capability lives in helper scripts
-2. Focus: improve code templates
-
-## Gate Thresholds
-- min_delta: 0.05 (code correctness is highly binary)
-- max_token_increase: 0.15 (code should be concise)
-```
-
-### Document Processing Skill
-
-```markdown
-## Evaluation Strategy
-### Quick Gate
-- Trigger sample: 3 cases
-- Hard assertion: run 1 file_exists case
-
-### Dev Eval (every iteration)
-- Run dev split: 6 cases
-- Focus areas: file_exists (file was generated), json_schema (output format)
-
-## Optimization Priorities
-1. Layer 3 (Scripts): document processing relies on scripts
-2. Layer 2 (Body): improve instruction clarity
-
-## Gate Thresholds
-- min_delta: 0.02
-- max_token_increase: 0.30 (document processing is inherently token-heavy)
-```
+- **Small GT (≤15 dev cases)**: relax `min_delta` to 0.03–0.05 so noise
+  doesn't flood the signal.
+- **Binary-correctness skills** (code generation, schema validation):
+  tighten `min_delta` to 0.05 and cap `max_token_increase` around 0.15.
+- **Token-heavy skills** (long-form writing, document processing): relax
+  `max_token_increase` to 0.25–0.30.
+- **Trigger already strong** (F1 ≥ 0.90): start at Layer 2, skip Layer 1.
+- **Helper-script skills**: start at Layer 2, expect Layer 3 promotion
+  early — the real capability lives in scripts.
 
 ---
 

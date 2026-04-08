@@ -65,6 +65,21 @@ mkdir -p ~/.claude/skills/skill-evolver
 cp -R plugin/skills/skill-evolver/* ~/.claude/skills/skill-evolver/
 ```
 
+**Option C: Codex or OpenCode users**
+
+The `.agents/` (Codex) and `.opencode/` (OpenCode) platform variants are
+not checked into git — they are generated on demand from `plugin/` by the
+sync scripts. After cloning the repo, run once:
+```bash
+bash scripts/sync-codex.sh      # for Codex → creates .agents/skills/skill-evolver/
+bash scripts/sync-opencode.sh   # for OpenCode → creates .opencode/skills/skill-evolver/
+# or sync all at once:
+bash scripts/sync-all.sh
+```
+Re-run the relevant sync script whenever you pull new changes. This keeps
+each platform's SKILL.md specialized (Codex-specific CLI names, etc.)
+without the repo carrying three duplicated copies of the same source.
+
 ### 3. Verify both are installed
 
 ```bash
@@ -134,10 +149,14 @@ The 6 program-only assertion types (`contains`, `not_contains`, `regex`, `json_s
 
 | Platform | Status | How |
 |---|---|---|
-| **Claude Code** | Full support | `plugin/skills/skill-evolver/` |
-| **OpenCode** | Full support | `.opencode/skills/skill-evolver/` (auto-synced) |
-| **Codex** | Full support | `.agents/skills/skill-evolver/` (auto-synced) |
+| **Claude Code** | Full support | `plugin/skills/skill-evolver/` (source of truth) |
+| **OpenCode** | Full support | `.opencode/skills/skill-evolver/` — run `bash scripts/sync-opencode.sh` |
+| **Codex** | Full support | `.agents/skills/skill-evolver/` — run `bash scripts/sync-codex.sh` |
 | **HTTP endpoint** | Supported | Set `EVOLVER_LLM_URL` env var |
+
+> The Codex and OpenCode variants are **generated on demand** from `plugin/`
+> by the sync scripts, not checked into git. Run the relevant sync script
+> once after cloning (and again after pulling updates).
 
 Set `LLM_BACKEND=codex` (or `opencode`, `http`) to override auto-detection.
 
@@ -372,22 +391,20 @@ python3 scripts/evolve_loop.py <skill-path> --cleanup-versions
 
 ```
 skill-evolver/
-├── plugin/skills/skill-evolver/    # The actual skill (Claude Code loads this)
+├── plugin/skills/skill-evolver/    # The actual skill (source of truth)
 │   ├── SKILL.md                    # Main entry point
-│   ├── references/                 # 6 protocol documents
-│   ├── agents/                     # 4 agent protocols
-│   └── scripts/                    # 8 Python scripts
-├── .opencode/skills/skill-evolver/ # OpenCode variant (auto-synced)
-├── .agents/skills/skill-evolver/   # Codex variant (auto-synced)
+│   ├── references/                 # Protocol documents
+│   ├── agents/                     # Agent protocols
+│   └── scripts/                    # Python scripts
 ├── examples/hello-skill/           # 5-minute demo
 ├── docs/
 │   ├── architecture.md             # Technical architecture (Chinese)
 │   ├── architecture.en.md          # Technical architecture (English)
 │   └── README_CN.md                # Chinese README
-├── dev/                            # Bootstrap / self-iteration tools
-│   ├── run_loop.py                 # Self-iteration driver (see docs/bootstrap-report.md)
-│   └── convert_for_viewer.py       # Evolver → Creator viewer format converter
 ├── scripts/                        # Build & sync scripts
+│   ├── sync-codex.sh               # Generates .agents/ from plugin/
+│   ├── sync-opencode.sh            # Generates .opencode/ from plugin/
+│   └── sync-all.sh                 # Runs both
 ├── README.md
 └── LICENSE                         # MIT
 ```

@@ -334,21 +334,17 @@ skill-evolver/                              # GitHub 仓库根目录
 ├── docs/                                   # 技术文档（给人看的）
 │   ├── architecture.md                     # 完整技术架构（中文）
 │   └── architecture.en.md                  # 完整技术架构（英文）
-├── .opencode/                              # OpenCode 平台变体（自动生成）
-│   └── skills/skill-evolver/               # 同一 skill，平台适配
-├── .agents/                                # Codex 平台变体（自动生成）
-│   └── skills/skill-evolver/               # 同一 skill，平台适配
 ├── scripts/                                # 构建和同步脚本
-│   ├── sync-opencode.sh                    # Claude → OpenCode 同步
-│   ├── sync-codex.sh                       # Claude → Codex 同步
-│   └── sync-all.sh                         # 同步所有平台
-├── dev/                                    # Bootstrap / 自迭代工具
-│   ├── run_loop.py                         # 自迭代驱动 (见 docs/bootstrap-report.md)
-│   └── convert_for_viewer.py               # Evolver → Creator viewer 格式转换
+│   ├── sync-opencode.sh                    # 从 plugin/ 生成 .opencode/
+│   ├── sync-codex.sh                       # 从 plugin/ 生成 .agents/
+│   └── sync-all.sh                         # 一次生成两个平台
 ├── docs/
 │   └── README_CN.md                        # 本文件
 ├── README.md                               # English
 └── LICENSE
+
+# 注：.agents/ 和 .opencode/ 平台镜像不进 git,由 sync 脚本按需生成
+#     首次 clone 后,Codex/OpenCode 用户各自跑一次对应的 sync 脚本即可
 ```
 
 ---

@@ -378,17 +378,20 @@ skill-evolver/                          ← GitHub repo root
 │               ├── evaluators.py            ← LocalEvaluator framework + BinaryLLMJudge
 │               ├── aggregate_results.py     ← statistical aggregation
 │               └── evolve_loop.py           ← 8-phase orchestration + eval viewer launch
-├── .agents/skills/skill-evolver/       ← Codex platform variant (auto-synced)
-├── .opencode/skills/skill-evolver/     ← OpenCode platform variant (auto-synced)
 ├── docs/
 │   ├── architecture.md                 ← this document (Chinese)
 │   ├── architecture.en.md              ← this document (English)
 │   └── README_CN.md                    ← Chinese README
-├── dev/                                ← Bootstrap / self-iteration tools
-│   ├── run_loop.py                     ← Self-iteration driver
-│   └── convert_for_viewer.py           ← Evolver → Creator viewer format converter
+├── scripts/
+│   ├── sync-codex.sh                   ← generates .agents/ on demand
+│   ├── sync-opencode.sh                ← generates .opencode/ on demand
+│   └── sync-all.sh                     ← runs both
 ├── README.md
 └── LICENSE
+
+# .agents/ and .opencode/ are generated from plugin/ by the sync scripts
+# and are not tracked in git. Run the relevant sync script once after
+# cloning if you use Codex or OpenCode.
 ```
 
 ---
