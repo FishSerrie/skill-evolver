@@ -266,15 +266,8 @@ Layer 3: Scripts/References → 深层能力优化，成本高
 |---|---|---|
 | best_versions/ | 保留最近 3 个 | `evolve_loop.py --cleanup-versions` |
 | iteration-EN/ | 保留最近 5 轮 + 所有 keep 轮 | `evolve_loop.py --cleanup` |
-| git history | squash 为一个总结 commit | `cleanup_git_history()` |
 
-### Git 防膨胀
-
-evolve 完成后调用 `cleanup_git_history()`：
-```bash
-# 自动 squash 所有 experiment+revert commits
-# "evolve: 65% → 78%, 6 keeps in 20 iterations"
-```
+Git 历史不自动清理——`git revert` 已经完整保留了失败实验的 history，手动 squash 是可选优化（参考 `references/evolve_protocol.md` 的 Git Cleanup Recommendations 段）。
 
 ---
 
@@ -283,11 +276,10 @@ evolve 完成后调用 `cleanup_git_history()`：
 ```
 skill-evolver/                          ← GitHub repo root
 ├── .claude-plugin/
-│   ├── marketplace.json                ← 商店目录（source → ./plugin）
-│   └── plugin.json                     ← 根身份证
+│   └── marketplace.json                ← marketplace 目录（source → ./plugin）
 ├── plugin/                             ← Claude Code 加载的子集
 │   ├── .claude-plugin/
-│   │   └── plugin.json                 ← plugin 身份证
+│   │   └── plugin.json                 ← plugin 身份证（per Claude Code plugin format spec）
 │   └── skills/
 │       └── skill-evolver/
 │           ├── SKILL.md                ← 主入口 + 快速开始
