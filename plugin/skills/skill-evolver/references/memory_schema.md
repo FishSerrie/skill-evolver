@@ -14,12 +14,12 @@
 │   │   ├── iteration-5/
 │   │   └── ...
 │   ├── iteration-E1/           # Per-iteration evaluation artifacts
-│   │   ├── benchmark.json
-│   │   ├── grades/
+│   │   ├── benchmark.json      # aggregated stats (run_l2_eval.write_benchmark)
+│   │   ├── grading.json        # per-case grade dump (run_l2_eval.write_grading)
 │   │   └── traces/             # Execution traces (see below)
 │   ├── iteration-E2/
 │   │   ├── benchmark.json
-│   │   ├── grades/
+│   │   ├── grading.json
 │   │   └── traces/
 │   └── ...
 └── ...
