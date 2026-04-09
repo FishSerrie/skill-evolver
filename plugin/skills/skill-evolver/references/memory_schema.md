@@ -61,40 +61,158 @@ The `aggregate` sub-field is a convenience snapshot — the authoritative time-s
 
 Per-case structured JSON files. Written by `evolve_loop.persist_cases`, which calls `evolve_loop.write_cases_to_dir` under the hood.
 
-Each case file (`case_{id}.json` with zero-padded id, e.g. `case_003.json`) captures paper §3's four trace components for that case:
+Each case file (`case_{id}.json` with zero-padded id, e.g. `case_003.json`) captures paper §3's four trace components for that case.
 
-| Paper component | Field in case JSON |
-|---|---|
-| prompts | `prompt` + `skill_loaded.*` |
-| tool calls | `assertions[].stdout` / `stderr` / `exit_code` / `duration_ms` (script_check) |
-| model outputs | `assertions[].judge_verdicts` / `judge_verdicts[].reasoning` (path_hit / fact_coverage) |
-| state updates | `assertions[].match.location` / `nearest_match` (matching state) |
+### Field map by paper component
 
-Example (minimal schema — individual fields are filled progressively by meta-evolution):
+| Paper §3 component | Field(s) in case JSON | Populated for |
+|---|---|---|
+| **prompts** | `prompt` (the GT case prompt) + `skill_loaded.*` (what the evaluator corpus-loaded) | every case |
+| **tool calls** | `assertions[].exit_code` / `stdout` / `stderr` / `duration_ms` / `resolved_path` | script_check |
+| **model outputs** | `assertions[].judge_reasoning` (path_hit) or `assertions[].judge_verdicts[].reasoning` (fact_coverage preset) | path_hit, fact_coverage |
+| **state updates** | `assertions[].match.{file,line,excerpt}` / `nearest_match` / `found_at` — matching state at eval time | contains, not_contains, regex |
+
+### Per-assertion-type rich field reference
+
+Every assertion record has these common fields: `index`, `type`, `value`, `description`, `pass`. Type-specific extras:
+
+**`contains` (pass)** — matching state
+```json
+{"type": "contains", "value": "...", "pass": true,
+ "match": {"file": "SKILL.md", "line": 114,
+           "excerpt": "... matched context ±40 chars ..."}}
+```
+
+**`contains` (fail)** — diagnostic shortcut for near-misses
+```json
+{"type": "contains", "value": "/install skill-creator", "pass": false,
+ "nearest_match": {
+   "matched_text": "install skill-creator",     // longest prefix/suffix that DID match
+   "missing_prefix": "/",                        // (or missing_suffix)
+   "match_ratio": 0.95,                          // 0..1 fraction of chars matched
+   "file": "SKILL.md",
+   "line": 98,
+   "excerpt": "... you need to install skill-creator before running ..."
+ }}
+```
+`nearest_match` is `null` if no useful prefix/suffix overlap exists.
+
+**`not_contains` (fail)** — where the forbidden string actually is
+```json
+{"type": "not_contains", "value": "FORBIDDEN_TOKEN", "pass": false,
+ "found_at": {"file": "references/some_ref.md", "line": 42,
+              "excerpt": "... docs still mention FORBIDDEN_TOKEN here ..."}}
+```
+
+**`regex` (pass)** — matched substring + location
+```json
+{"type": "regex", "value": "case_\\d+\\.json", "pass": true,
+ "match": {"file": "references/memory_schema.md", "line": 64,
+           "text": "case_003.json",
+           "excerpt": "..."}}
+```
+
+**`regex` (fail)** — `nearest_match: null` (regex nearest-match is hard to compute; diagnose from the pattern + content)
+
+**`script_check` (pass or fail)** — full tool-call capture
+```json
+{"type": "script_check", "value": "evals/checks/check_foo.py",
+ "pass": false,
+ "exit_code": 2,
+ "stdout": "... up to 2000 chars ...",
+ "stderr": "... up to 2000 chars ...",
+ "duration_ms": 45,
+ "resolved_path": "/abs/path/to/check_foo.py"}
+```
+`resolved_path` is `null` only when the script file couldn't be located. stdout/stderr are capped at 2000 chars each to keep the case file bounded.
+
+**`path_hit` (pass or fail)** — LLM judge rationale
+```json
+{"type": "path_hit", "value": "references/eval_strategy.md",
+ "pass": true,
+ "judge_reasoning": "The SKILL.md Prerequisites section mentions eval_strategy.md at line 128 as the source of evaluator config templates."}
+```
+
+**`fact_coverage` preset mode** — per-fact breakdown
+```json
+{"type": "fact_coverage", "value": "...", "pass": false,
+ "mode": "preset",
+ "judge_verdicts": [
+   {"fact": "three install methods", "verdict": true,
+    "reasoning": "Section lists /install, git clone, and env var."},
+   {"fact": "marketplace path", "verdict": false,
+    "reasoning": "Mentions /install but does not specify the plugin path."},
+   {"fact": "env var name", "verdict": true,
+    "reasoning": "SKILL_CREATOR_PATH is called out at line 128."}
+ ],
+ "passed_facts": 2,
+ "total_facts": 3}
+```
+
+**`fact_coverage` online mode** — keyword hit list
+```json
+{"type": "fact_coverage", "value": "skill-creator, marketplace, env var",
+ "pass": true,
+ "mode": "online",
+ "keyword_hits": ["skill-creator", "marketplace", "env var"],
+ "keyword_total": 3}
+```
+
+**`file_exists` (fail)** — the path that was checked
+```json
+{"type": "file_exists", "value": "references/missing.md", "pass": false,
+ "expected_path": "/abs/path/to/skill/references/missing.md"}
+```
+
+**`json_schema`** — just `{"pass": bool}` (no extras yet)
+
+### case.skill_loaded — state updates snapshot
+
+```json
+"skill_loaded": {
+  "path": "plugin/skills/skill-evolver/",
+  "size_bytes": 25092,
+  "skill_md_lines": 453,
+  "description_chars": 761,
+  "references_loaded": [
+    "references/creator_integration.md",
+    "references/eval_strategy.md",
+    ...
+  ],
+  "agents_loaded": [
+    "agents/analyzer_agent.md",
+    "agents/grader_agent.md",
+    ...
+  ]
+}
+```
+
+Captured once per `full_eval` call (identical across cases in the same run). Gives a proposer reading a historical case JSON everything they need to reconstruct the corpus shape without re-running git checkout.
+
+### Minimal example (two assertions)
 
 ```json
 {
   "case_id": 3,
   "split": "dev",
   "prompt": "What installation instructions does skill-evolver show...",
-  "skill_loaded": {
-    "path": "plugin/skills/skill-evolver/",
-    "size_bytes": 24331
-  },
+  "skill_loaded": { "... see above ..." },
   "assertions": [
     {
-      "index": 0,
-      "type": "contains",
+      "index": 0, "type": "contains",
       "value": "https://github.com/anthropics/skills",
       "description": "GitHub URL must be visible",
-      "pass": true
+      "pass": true,
+      "match": {"file": "SKILL.md", "line": 114, "excerpt": "..."}
     },
     {
-      "index": 1,
-      "type": "script_check",
-      "value": "check_python_version_gate.py",
-      "description": "...",
-      "pass": false
+      "index": 1, "type": "script_check",
+      "value": "evals/checks/check_python_version_gate.py",
+      "description": "Python 3.10+ gate in common.py",
+      "pass": false,
+      "exit_code": 2, "stdout": "", "stderr": "Expected '3.10' ...",
+      "duration_ms": 45,
+      "resolved_path": "/.../check_python_version_gate.py"
     }
   ],
   "summary": {

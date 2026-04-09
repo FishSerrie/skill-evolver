@@ -218,24 +218,88 @@ Is stuck: {review.get('stuck', False)}
 
 {"## Trace files (read selectively with the Read and Grep tools — do NOT try to read all of them)" + chr(10) + path_context if path_context else ""}
 
+## Per-case JSON schema (what to look for inside each case_{{id}}.json)
+
+Each case JSON produced by LocalEvaluator.full_eval carries the
+Meta-Harness paper §3 four trace components in structured form. When
+you Read a case file, look for these fields by assertion type —
+they're the difference between guessing and diagnosing.
+
+  case.skill_loaded  (state updates trace component)
+    - path, size_bytes, skill_md_lines
+    - description_chars            ← front-matter description length
+    - references_loaded: [str]     ← what the evaluator corpus-loaded
+    - agents_loaded: [str]
+
+  case.summary.failed_indexes: [int]  ← the exact assertions that failed
+
+  assertion (common fields)
+    - index, type, value, description, pass
+
+  assertion.type == "contains" (or "regex")
+    PASS: match.file / match.line / match.excerpt
+          → tells you WHERE the needle hit; useful for cross-checking
+            that the match landed in the intended section
+    FAIL: nearest_match: {{matched_text, missing_suffix|missing_prefix,
+                           match_ratio, file, line, excerpt}} or None
+          → if nearest_match is populated, the needle is CLOSE to
+            appearing — usually a whitespace/punctuation diff. If None,
+            the content is missing entirely.
+
+  assertion.type == "not_contains"
+    FAIL: found_at: {{file, line, excerpt}}
+          → tells you WHERE the forbidden string actually lives so
+            you can delete it precisely
+
+  assertion.type == "script_check"  (tool calls trace component)
+    BOTH: exit_code, stdout, stderr, duration_ms, resolved_path
+          → exit_code + stdout/stderr are THE reason a script_check
+            failed. DO NOT re-run the script — read these fields
+            from the case JSON and diagnose from there.
+
+  assertion.type == "path_hit"  (model outputs trace component)
+    BOTH: judge_reasoning: str
+          → the LLM judge's 1-2 sentence rationale. If it says "found
+            at line 42", go Read that line in the skill source.
+
+  assertion.type == "fact_coverage" preset mode  (model outputs ×N)
+    BOTH: judge_verdicts: [{{fact, verdict, reasoning}}]
+          passed_facts, total_facts
+          → find the facts whose verdict is false; the reasoning
+            tells you why each one was marked missing
+
+  assertion.type == "fact_coverage" online mode
+    BOTH: keyword_hits: [str], keyword_total
+
 {"## Past Diagnoses (insights from prior iterations)" + chr(10) + diagnosis_context if diagnosis_context else ""}
 
 MANDATORY PROTOCOL (Meta-Harness §2 active diagnosis):
 1. If failed_case_paths are listed, READ THEM FIRST using the Read tool —
-   each case_N.json has a "summary.failed_indexes" field pointing at
-   which assertions failed; use it to locate the exact failing assertion.
-2. For cross-iteration patterns, use the suggested greps with the Grep
+   each case_{{id}}.json has a "summary.failed_indexes" array pointing
+   at which assertions failed. Use it to jump straight to the failing
+   assertion record without scanning the whole file.
+2. Inside each failing assertion, look for the type-specific rich
+   fields (above). Don't just read "pass": false — read the exact
+   trace evidence. A contains failure with nearest_match.match_ratio
+   of 0.9 means something very different from nearest_match == None.
+3. For cross-iteration patterns, use the suggested greps with the Grep
    tool — e.g. grep for "pass": false across iteration-E*/cases/*.json
    to see if the same case has been failing repeatedly.
-3. State your diagnosis: "Case X assertion Y failed because [specific
-   reason grounded in what you read from the case JSON]".
-4. Then propose ONE atomic change that directly addresses the diagnosed cause.
-5. Do NOT guess — if no case JSON evidence points to a clear cause, say so.
+4. State your diagnosis in the format:
+     "Case X assertion Y (type=Z) failed because [specific field
+      evidence from the case JSON, e.g. 'stderr shows
+      ModuleNotFoundError: foo' or 'nearest_match found at
+      SKILL.md:87 with match_ratio 0.9 — missing the leading slash']"
+5. Then propose ONE atomic change that directly addresses the
+   diagnosed cause.
+6. Do NOT guess — if no case JSON evidence points to a clear cause,
+   say so and either fall back to exploring less-tried mutation types
+   or ask for a GT probe expansion.
 
 Read the SKILL.md at {skill_path / 'SKILL.md'}, then make your change.
 
 After making the change, output EXACTLY this JSON on the last line:
-{{"changed": true, "description": "one sentence describing what you changed", "mutation_type": "body_rewrite", "diagnosis": "Case X failed because Y, so I changed Z"}}
+{{"changed": true, "description": "one sentence describing what you changed", "mutation_type": "body_rewrite", "diagnosis": "Case X assertion Y failed because [trace evidence]; I changed Z"}}
 
 If you find nothing to improve, output:
 {{"changed": false, "description": "no improvement found", "mutation_type": "none", "diagnosis": ""}}
