@@ -650,7 +650,7 @@ class LocalEvaluator(Evaluator):
             return out
 
         if atype == "json_schema":
-            return {"pass": self._check_json_schema(val, content)}
+            return self._check_json_schema_rich(val, content)
 
         if atype == "script_check":
             return self._check_script_rich(val, content, skill_path)
@@ -671,21 +671,59 @@ class LocalEvaluator(Evaluator):
         # Unknown assertion type — fail explicitly (don't silently pass).
         return {"pass": False, "error": f"unknown assertion type: {atype}"}
 
-    def _check_json_schema(self, schema_str: str, content: str) -> bool:
-        """Validate content against a JSON schema (program-only)."""
+    def _check_json_schema_rich(self, schema_str: str, content: str) -> dict:
+        """Validate content against a JSON schema and return a rich
+        result dict including the specific validation failure path.
+
+        Three failure classes the proposer needs to distinguish:
+
+          schema_error   → the GT's schema itself didn't parse
+          no_json        → no JSON block found inside the content at all
+          parse_error    → JSON block found but couldn't be parsed
+          schema_mismatch→ parsed fine but failed one schema constraint
+                           (``path`` tells you which field)
+
+        Keeps the old ``_check_json_schema`` → bool API as a thin
+        wrapper below for any external caller that only needs the
+        verdict, but internally everything goes through the rich path.
+        """
         try:
             schema = json.loads(schema_str)
-            # Extract JSON from content (try ```json blocks first, then raw)
-            json_match = re.search(
-                r'```json\s*\n(.*?)\n```', content, re.DOTALL)
-            if json_match:
-                data = json.loads(json_match.group(1))
-            else:
-                data = json.loads(content)
-            # Basic validation: check required keys and types
-            return _basic_schema_check(data, schema)
-        except (json.JSONDecodeError, KeyError, TypeError):
-            return False
+        except json.JSONDecodeError as e:
+            return {"pass": False, "schema_error": str(e)}
+
+        # Extract JSON from content (try ```json blocks first, then raw).
+        json_match = re.search(r'```json\s*\n(.*?)\n```', content, re.DOTALL)
+        if json_match:
+            data_str = json_match.group(1)
+            extracted_from = "fenced_code_block"
+        else:
+            data_str = content
+            extracted_from = "raw_content"
+
+        try:
+            data = json.loads(data_str)
+        except json.JSONDecodeError as e:
+            return {
+                "pass": False,
+                "parse_error": str(e),
+                "extracted_from": extracted_from,
+            }
+
+        ok, failure_path = _basic_schema_check_with_path(data, schema, "")
+        if ok:
+            return {"pass": True, "extracted_from": extracted_from}
+        return {
+            "pass": False,
+            "schema_mismatch_path": failure_path,
+            "extracted_from": extracted_from,
+        }
+
+    def _check_json_schema(self, schema_str: str, content: str) -> bool:
+        """Back-compat bool wrapper (nothing else currently calls this,
+        but keep it around so a future evaluator backend can depend on
+        the old contract without a conditional import)."""
+        return bool(self._check_json_schema_rich(schema_str, content).get("pass"))
 
     def _check_script_rich(self, script_path: str, content: str,
                            skill_path: Path) -> dict:
@@ -836,37 +874,72 @@ class LocalEvaluator(Evaluator):
 
 
 def _basic_schema_check(data: Any, schema: dict) -> bool:
-    """Lightweight JSON schema validation without jsonschema dependency."""
+    """Lightweight JSON schema validation without jsonschema dependency.
+
+    Thin wrapper around :func:`_basic_schema_check_with_path` that
+    discards the failure-path string. Kept for any external caller
+    that only needs the boolean verdict.
+    """
+    ok, _ = _basic_schema_check_with_path(data, schema, "")
+    return ok
+
+
+def _basic_schema_check_with_path(
+    data: Any, schema: dict, path: str
+) -> tuple[bool, str]:
+    """Lightweight JSON schema validation that returns both a verdict
+    and the path to the first failing constraint.
+
+    The path is a dotted string like ``$.items[2].name`` identifying
+    which field inside ``data`` violated its declared schema. Empty
+    string on success. This lets the proposer jump straight to the
+    offending field without re-running the validator — aligned with
+    the Meta-Harness paper §3 state-updates trace component.
+    """
     stype = schema.get("type")
+    here = path or "$"
     if stype == "object":
         if not isinstance(data, dict):
-            return False
+            return False, f"{here} expected object, got {type(data).__name__}"
         for req in schema.get("required", []):
             if req not in data:
-                return False
+                return False, f"{here} missing required field '{req}'"
         props = schema.get("properties", {})
         for key, prop_schema in props.items():
             if key in data:
-                if not _basic_schema_check(data[key], prop_schema):
-                    return False
-        return True
+                ok, where = _basic_schema_check_with_path(
+                    data[key], prop_schema, f"{here}.{key}")
+                if not ok:
+                    return False, where
+        return True, ""
     if stype == "array":
         if not isinstance(data, list):
-            return False
+            return False, f"{here} expected array, got {type(data).__name__}"
         items_schema = schema.get("items")
         if items_schema:
-            return all(_basic_schema_check(item, items_schema)
-                       for item in data)
-        return True
+            for i, item in enumerate(data):
+                ok, where = _basic_schema_check_with_path(
+                    item, items_schema, f"{here}[{i}]")
+                if not ok:
+                    return False, where
+        return True, ""
     if stype == "string":
-        return isinstance(data, str)
+        if not isinstance(data, str):
+            return False, f"{here} expected string, got {type(data).__name__}"
+        return True, ""
     if stype == "number":
-        return isinstance(data, (int, float))
+        if not isinstance(data, (int, float)):
+            return False, f"{here} expected number, got {type(data).__name__}"
+        return True, ""
     if stype == "integer":
-        return isinstance(data, int)
+        if not isinstance(data, int):
+            return False, f"{here} expected integer, got {type(data).__name__}"
+        return True, ""
     if stype == "boolean":
-        return isinstance(data, bool)
-    return True  # no type constraint
+        if not isinstance(data, bool):
+            return False, f"{here} expected boolean, got {type(data).__name__}"
+        return True, ""
+    return True, ""  # no type constraint
 
 
 # ─────────────────────────────────────────────
