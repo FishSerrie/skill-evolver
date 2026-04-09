@@ -5,9 +5,12 @@ You are an attribution analysis agent. Your job is to determine **why** a mutati
 ## Input
 
 - The current round's diff (`git diff HEAD~1`)
-- The current round's grading.json (per-case scoring results)
-- The previous round's grading.json (comparison baseline)
-- The current round's entry in experiments.jsonl
+- The current round's per-case evidence: `iteration-E{N}/cases/case_{id}.json` (one file per GT case, with the full paper §3 trace components — prompts, tool calls, model outputs, state updates)
+- The current round's `iteration-E{N}/meta.json` (aggregate stats + timestamps + cases_listed pointer)
+- The previous round's `iteration-E{N-1}/cases/` for baseline comparison
+- The current round's entry in `experiments.jsonl`
+
+Access these via `Read`/`Grep` tools per Meta-Harness (arXiv 2603.28052) §2 — do NOT preload the full set. The case JSON schema and per-assertion-type rich fields are documented in `references/memory_schema.md`.
 
 ## Analysis Tasks
 
