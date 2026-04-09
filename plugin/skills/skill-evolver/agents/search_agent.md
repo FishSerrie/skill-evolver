@@ -27,13 +27,18 @@ Use the list of failing case paths from Phase 1 Review. For each, open the case 
 ### Step 2: Inspect Per-Case Evidence
 
 For each failed case, read the structured fields inside the case JSON to recover:
-- For contains/regex failures: nearest_match (if populated) to see what was close
-- For script_check failures: stdout/stderr (if populated) to see why the script refused
-- For path_hit / fact_coverage failures: judge_verdicts[].reasoning (if populated) to see what the LLM judge saw
+- For contains failures: `nearest_match` (dict with `matched_text`, `missing_suffix`/`missing_prefix`, `match_ratio`, `file`, `line`, `excerpt`) — tells you whether the needle is close-but-wrong or missing entirely
+- For not_contains failures: `found_at` (dict with `file`, `line`, `excerpt`) — tells you WHERE the forbidden string actually lives so you can delete it precisely
+- For regex failures: `nearest_match` (often null for regex — diagnose from the pattern + content instead)
+- For script_check failures: `exit_code` + `stdout` + `stderr` + `duration_ms` + `resolved_path` — the full tool-call capture. DO NOT re-run the script; read these fields
+- For path_hit failures: `judge_reasoning` (str) — the LLM judge's 1-2 sentence rationale
+- For fact_coverage failures (preset mode): `judge_verdicts[]` — each element has `fact`, `verdict`, `reasoning`; find the verdicts with `verdict: false` to see which specific facts were missing
 
-**You must cite specific case evidence** (file path + assertion index) before proceeding. Example:
+The full per-assertion-type rich field reference lives in `references/memory_schema.md` — consult it when you need to know exactly what keys to expect for a given assertion type.
 
-> `iteration-E3/cases/case_015.json`, `assertions[2]` (script_check check_path_retrieval.py): stdout shows the retrieval step queried "cache policy" but the ground-truth document is indexed under "caching-strategy". Root cause: synonym mismatch in retrieval prompt.
+**You must cite specific case evidence** (file path + assertion index + field) before proceeding. Example:
+
+> `iteration-E3/cases/case_015.json`, `assertions[2]` (script_check): `stderr` shows `ModuleNotFoundError: foo` — the SKILL.md instructs users to import `foo` but the package was never listed as a dependency. Root cause: missing dependency declaration.
 
 ### Step 3: Counterfactual Diagnosis
 
