@@ -46,7 +46,7 @@ from cleanup import (
 from evolve_loop import (  # phase definitions live in evolve_loop.py
     phase_0_setup, phase_1_review, phase_4_commit,
     phase_7_log, phase_8_loop_control,
-    git_revert_last, save_best_version,
+    git_revert_last, save_best_version, _list_untracked,
 )
 
 
@@ -158,6 +158,14 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
         review = phase_1_review(workspace, skill_path)
         log(f"  {review['iterations']} iters, {review['keeps']} keeps, stuck={review['stuck']}")
 
+        # Snapshot untracked files BEFORE phase_2_3 so we can diff
+        # after the mutation runs and pass the resulting new_files list
+        # to phase_4_commit. This lets Layer 3 mutations add new files
+        # (iter 25 / #1) without re-opening iter 8's `git add -A`
+        # footgun — only the files the mutation actually created are
+        # staged, any user-dropped debris is ignored.
+        untracked_before = _list_untracked(skill_path)
+
         # Phase 2+3: Ideate and Modify (via claude -p)
         log("Phase 2+3: Ideate and Modify (calling claude -p)")
         result_23 = phase_2_3_ideate_and_modify(
@@ -170,6 +178,14 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
                         1.0, 0, "pass", "exhausted", current_layer, "no improvement found")
             break
 
+        # Compute mutation-added new files (iter 25). Empty set if the
+        # mutation only edited tracked files, which is the common case.
+        untracked_after = _list_untracked(skill_path)
+        new_files = sorted(untracked_after - untracked_before)
+        if new_files:
+            log(f"  Phase 2+3 added {len(new_files)} new file(s): {', '.join(new_files[:5])}"
+                + (f" (+{len(new_files) - 5} more)" if len(new_files) > 5 else ""))
+
         # Dry-run: stop here, before Phase 4 commits anything. Revert
         # the mutation first so the working tree matches what Phase 0
         # started with. The loop returns the proposed change so the
@@ -180,18 +196,29 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
                 ["git", "checkout", "--", "."], cwd=str(skill_path),
                 capture_output=True, text=True, timeout=10,
             )
+            # Also remove the mutation-added untracked files so the
+            # tree matches the pre-iteration state exactly.
+            for nf in new_files:
+                try:
+                    (skill_path / nf).unlink(missing_ok=True)
+                except OSError:
+                    pass
             return {
                 "success": True,
                 "dry_run": True,
                 "baseline_pass_rate": baseline_rate,
                 "proposed_mutation": result_23,
+                "proposed_new_files": new_files,
                 "best_metric": best_rate,
                 "iterations_run": 1,
             }
 
-        # Phase 4: Commit
+        # Phase 4: Commit — pass mutation-added new files explicitly
         log("Phase 4: Commit")
-        commit = phase_4_commit(skill_path, current_layer, result_23["description"])
+        commit = phase_4_commit(
+            skill_path, current_layer, result_23["description"],
+            new_files=new_files,
+        )
         if not commit["success"]:
             log(f"  Commit failed: {commit.get('error')}")
             continue

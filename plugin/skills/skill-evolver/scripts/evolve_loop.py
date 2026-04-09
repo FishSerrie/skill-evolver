@@ -265,26 +265,86 @@ def phase_1_review(workspace: Path, skill_path: Path) -> dict:
 # Phase 4: Commit (fully automated)
 # ─────────────────────────────────────────────
 
-def phase_4_commit(skill_path: Path, layer: str, description: str) -> dict:
-    """Git add + commit the changes.
+def _list_untracked(skill_path: Path) -> set[str]:
+    """Return the set of untracked (but not ignored) file paths in the
+    skill directory, relative to skill_path.
 
-    Uses ``git add -u`` (tracked-only) so mid-loop user-added debris
-    (scratch scripts, *.orig backups, editor swap files, etc.) does not
-    get swept into an experiment commit. Paired with the Phase 0
-    clean-tree check, this keeps the invariant "commits contain only
-    the mutation's intended changes" from start to end of the run.
-
-    Layer 3 mutations that legitimately add NEW files need to commit
-    them separately — the loop does not auto-stage untracked content.
-
-    Returns: {"success", "commit_hash", "files_changed"}
+    Used by the orchestrator to snapshot the untracked set before and
+    after ``phase_2_3_ideate_and_modify`` so the diff can be passed to
+    ``phase_4_commit`` as ``new_files`` — the files the mutation
+    legitimately added and wants staged by name.
     """
     try:
-        # Stage changes — tracked files only. Anything untracked is
-        # presumed to be the user's own work and left alone. See the
-        # docstring for the Layer 3 caveat.
+        result = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard"],
+            cwd=str(skill_path), capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            return set()
+        return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+    except (subprocess.TimeoutExpired, OSError):
+        return set()
+
+
+def phase_4_commit(skill_path: Path, layer: str, description: str,
+                   new_files: list[str] | None = None) -> dict:
+    """Git add + commit the changes.
+
+    Staging strategy (three layers of safety, accumulated across iters):
+
+    * **Tracked modifications** — always staged via ``git add -u``
+      (iter 8 safety: never sweep untracked debris the user may have
+      dropped into the skill dir during the loop).
+    * **Mutation-added new files** — staged explicitly by name via
+      the ``new_files`` parameter. The caller (``run_evolve_loop``)
+      snapshots the untracked file set before and after
+      ``phase_2_3_ideate_and_modify`` and passes the diff here. This
+      closes iter 8's only remaining gap: Layer 3 mutations that add
+      a new helper script / reference file can now be committed
+      automatically without re-opening the ``git add -A`` footgun.
+    * **User-dropped debris** — files that appeared in the working
+      tree during the iteration but were NOT reported by the
+      orchestrator are left untouched. The Phase 0 clean-tree check
+      (iter 7 + iter 12) guarantees the starting state is empty, so
+      anything not in ``new_files`` is by elimination not from the
+      mutation.
+
+    Args:
+        skill_path: the skill directory under git.
+        layer: current mutation layer string (``description`` / ``body``
+            / ``script``), used in the commit message prefix.
+        description: one-sentence commit message body.
+        new_files: optional list of paths (relative to ``skill_path``)
+            that the mutation added. If provided, each is staged with
+            ``git add <path>`` alongside the ``git add -u`` for
+            tracked modifications. ``None`` or ``[]`` disables new-file
+            staging — the legacy pre-iter-25 behavior.
+
+    Returns: {"success", "commit_hash", "files_changed", "error"}
+    """
+    try:
+        # Stage tracked modifications — iter 8 safety baseline.
         subprocess.run(["git", "add", "-u"], cwd=str(skill_path),
                        capture_output=True, timeout=10)
+
+        # Stage mutation-added new files explicitly by name (iter 25).
+        # Using explicit paths avoids `git add -A` (which would pull
+        # in any untracked file, breaking the iter 8 safety invariant)
+        # while still enabling Layer 3 new-file mutations.
+        if new_files:
+            for rel_path in new_files:
+                # Defensive: don't let a path traverse out of the skill
+                # dir via "..", and skip empties. Path.resolve() is
+                # intentionally NOT used — we want the user-supplied
+                # relative path to stay relative so git treats it
+                # correctly against cwd=skill_path.
+                if not rel_path or rel_path.startswith("/") or ".." in rel_path.split("/"):
+                    continue
+                subprocess.run(
+                    ["git", "add", "--", rel_path],
+                    cwd=str(skill_path),
+                    capture_output=True, text=True, timeout=10,
+                )
 
         # Check if there are changes
         status = subprocess.run(["git", "status", "--porcelain"],
