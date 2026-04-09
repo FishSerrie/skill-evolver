@@ -161,10 +161,10 @@ See `references/creator_integration.md` Section 3 for the full path discovery or
 | Mode | Trigger | Responsibility | Calls Creator? |
 |---|---|---|---|
 | **Create** | `/skill-evolver create` | Generate an initial skill from requirements + GT | Yes: reads Creator's creation workflow |
-| **Eval** | `/skill-evolver eval` | Single evaluation pass, produces a benchmark | Yes: calls Creator's run_eval |
+| **Eval** | `/skill-evolver eval` | Single evaluation pass, produces a benchmark | Default: `LocalEvaluator` (deterministic, no LLM); opt-in to `CreatorEvaluator` for additional trigger-F1 via Creator's `run_eval.py` |
 | **Improve** | `/skill-evolver improve` | Human-directed targeted improvement | Yes: follows Creator's iteration workflow |
-| **Benchmark** | `/skill-evolver benchmark` | Systematic comparison (A/B, blind review) | Yes: calls Creator's comparator/analyzer |
-| **Evolve** | `/skill-evolver evolve` | Automated iterative optimization (core) | Partial: evaluation via Creator; search/gating/memory are Evolver's own |
+| **Benchmark** | `/skill-evolver benchmark` | Systematic comparison (A/B, blind review) | Yes: calls Creator's comparator/analyzer agents |
+| **Evolve** | `/skill-evolver evolve` | Automated iterative optimization (core) | Partial: default eval path is `LocalEvaluator` (in `scripts/evaluators.py`); `CreatorEvaluator` / `ScriptEvaluator` / `PytestEvaluator` are opt-in via evolve_plan.md. Search/gating/memory are Evolver's own. |
 
 To run multiple modes in sequence (e.g. create then eval then evolve), invoke them one after another — each mode is idempotent and reuses the same workspace, so chaining them is a conversational concern, not a separate CLI command.
 
@@ -302,7 +302,7 @@ Automated iterative optimization. The core value of Evolver.
 ```
 /skill-evolver evolve <skill-path>
 ```
-The user might say "optimize this skill" and provide a path, or "here's some test data" with a file. GT data is not a required argument — if missing, Evolver calls Creator to generate it automatically.
+The user might say "optimize this skill" and provide a path, or "here's some test data" with a file. GT data is not a required argument — if missing, Evolver constructs a starter GT: in the conversation path Claude interviews the user or infers cases from SKILL.md using Creator's test-case methodology by reference, and in CLI `--run` mode `scripts/llm.py::auto_construct_gt` generates cases via the configured LLM CLI.
 
 **Full protocol:** see `references/evolve_protocol.md`.
 
@@ -434,6 +434,69 @@ Memory is stored in the target skill's workspace under the `evolve/` subdirector
 - `<workspace>/evolve/results.tsv`: experiment log
 - `<workspace>/evolve/experiments.jsonl`: fine-grained memory
 - `<workspace>/evolve/best_versions/`: historical best snapshots
+
+---
+
+## Code Organization
+
+`scripts/` is split across 13 single-purpose files, every one ≤ 610 lines.
+`from evolve_loop import X` still works for all the symbols listed
+below via top-level re-exports and PEP 562 module `__getattr__`, so
+external callers don't need to know where a symbol physically lives.
+
+| File | Owns | Lines |
+|---|---|---:|
+| `scripts/evolve_loop.py` | Phase functions 0/1/4/5/7/8 + `git_revert_last` + `save_best_version` + `persist_traces` + `write_traces_to_dir` + PEP 562 `__getattr__` re-export of orchestrator symbols + `python scripts/evolve_loop.py` CLI entry (delegates to `orchestrator.main`) | 580 |
+| `scripts/orchestrator.py` | `run_evolve_loop` (the 8-Phase driver) + `main` (argparse + subcommand dispatch) + `_eval_holdout_or_none` | 467 |
+| `scripts/gate.py` | `phase_6_gate_decision` (pure function, stdlib only) | 134 |
+| `scripts/llm.py` | `LLM_BACKENDS` registry + `_call_llm` / `_call_llm_http` / `_call_claude` + `phase_2_3_ideate_and_modify` + `run_l2_eval_via_claude` + `_local_eval` + `auto_construct_gt` | 389 |
+| `scripts/cleanup.py` | `_iter_num` (shared numeric-sort helper) + `cleanup_best_versions` + `cleanup_eval_outputs` + `_try_launch_eval_viewer` | 153 |
+| `scripts/evaluators.py` | `Evaluator` ABC + `BinaryLLMJudge` + `LocalEvaluator` + `_basic_schema_check` + `get_evaluator` factory (lazy-imports backends) + `parse_evaluator_from_plan` + `EVALUATOR_NAMES` | 608 |
+| `scripts/evaluator_backends.py` | `CreatorEvaluator` + `ScriptEvaluator` + `PytestEvaluator` (lazy-loaded by factory) | 321 |
+| `scripts/common.py` | Creator path discovery + `find_workspace` + `parse_skill_md` + `validate_frontmatter` + `require_creator` / `CreatorNotFoundError` | 400 |
+| `scripts/aggregate_results.py` | `parse_results_tsv` + `calculate_summary` + `format_markdown` + `run_benchmark` A/B + `format_benchmark_markdown` | 389 |
+| `scripts/run_l1_gate.py` | L1 quick-gate CLI helper + `run_l1_gate` library function | 193 |
+| `scripts/run_l2_eval.py` | L2 eval library helpers: `load_gt` + `aggregate_grades` + `write_benchmark` + `write_grading` | 155 |
+| `scripts/setup_workspace.py` | `setup_workspace` library + CLI entry — creates workspace/evals/checks/ layout + evolve_plan.md template | 172 |
+| `scripts/__init__.py` | (empty marker file) | 1 |
+
+**Import graph** (DAG, no cycles):
+
+```
+              common.py ← (everyone imports Creator discovery + paths)
+                 ↑
+     ┌───────────┴────────────┐
+     │                        │
+ evaluators.py            aggregate_results.py
+ ├─ lazy→ evaluator_backends.py
+ │        └─→ evaluators (ABC)
+ │
+ ├── gate.py (stdlib only)
+ ├── llm.py (Evaluator → evaluators for type hints only)
+ └── cleanup.py → aggregate_results (parse_results_tsv)
+                ↓
+         evolve_loop.py  ← imports gate / llm / cleanup / evaluators
+                ↓                           ↑ PEP 562 __getattr__
+         orchestrator.py ──────────────────┘
+           ← imports phase_* from evolve_loop
+           ← delegates CLI back to itself when invoked as
+             `python scripts/evolve_loop.py`
+```
+
+Two deliberate cycle-breakers:
+
+1. **`evolve_loop.py` lazy re-exports from `orchestrator.py`** via PEP 562
+   `__getattr__`. `orchestrator.py` imports phase functions from
+   `evolve_loop.py` at load time; back-compat callers doing
+   `from evolve_loop import run_evolve_loop` trigger the lazy import
+   only on attribute access, keeping the top-level graph a DAG.
+
+2. **`get_evaluator` in `evaluators.py` lazy-imports the three backends**
+   (`CreatorEvaluator` / `ScriptEvaluator` / `PytestEvaluator`) from
+   `evaluator_backends.py` only when the corresponding config key is
+   requested. `import evaluators` leaves `evaluator_backends` absent
+   from `sys.modules`, so the default path has zero load-time
+   dependency on the alternative backends.
 
 ---
 
