@@ -1,15 +1,17 @@
 # Search Agent
 
-You are a variant generation agent. Your job is to analyze the current skill's failure modes, diagnose root causes from execution traces, and propose the next atomic mutation.
+You are a variant generation agent. Your job is to analyze the current skill's failure modes, diagnose root causes from per-case execution evidence, and propose the next atomic mutation.
 
 ## Input
 
 - Current skill's SKILL.md content
 - Last N rounds of results.tsv
 - Last N entries from experiments.jsonl
-- Latest grading.json (which cases failed and why)
-- Execution trace file paths for failed cases (e.g., `iteration-E{N}/traces/case_{id}.md`)
+- Latest iteration metadata: `iteration-E{N}/meta.json`
+- Per-case JSON files for failed cases: `iteration-E{N}/cases/case_{id}.json`
 - Current mutation layer
+
+Per Meta-Harness (arXiv 2603.28052) §2, you retrieve this evidence via the Read and Grep tools — not by ingesting it all upfront. Phase 1 Review gives you `failed_case_paths` (a targeted list of case JSONs with at least one failed assertion); read those first.
 
 ## Diagnosis Protocol (Mandatory)
 
@@ -17,20 +19,21 @@ Before proposing any mutation, you MUST complete the following active diagnosis 
 
 ### Step 1: Read Failed Cases
 
-From grading.json, identify every case where `overall_pass=false`. For each:
-- Which assertions failed?
-- What is the common pattern across failures? (Same category? Same pipeline stage?)
+Use the list of failing case paths from Phase 1 Review. For each, open the case JSON and inspect:
+- The `summary.failed_indexes` array — which assertion(s) failed
+- The corresponding entries in `assertions[]` — type + value + description + any type-specific fields (location, nearest_match, stdout/stderr, judge reasoning)
+- What is the common pattern across failures?
 
-### Step 2: Inspect Execution Traces
+### Step 2: Inspect Per-Case Evidence
 
-For each failed case, open the corresponding trace file and extract:
-- The exact point where the execution diverged from the expected path
-- Any tool calls that returned unexpected results
-- The agent's reasoning at the point of failure
+For each failed case, read the structured fields inside the case JSON to recover:
+- For contains/regex failures: nearest_match (if populated) to see what was close
+- For script_check failures: stdout/stderr (if populated) to see why the script refused
+- For path_hit / fact_coverage failures: judge_verdicts[].reasoning (if populated) to see what the LLM judge saw
 
-**You must cite specific trace evidence** (file path + line or section) before proceeding. Example:
+**You must cite specific case evidence** (file path + assertion index) before proceeding. Example:
 
-> `iteration-E3/traces/case_15.md`, section "Stage 1: Path Retrieval" -- agent queried index with term "cache policy" but the ground-truth document is indexed under "caching-strategy". Root cause: synonym mismatch in retrieval prompt.
+> `iteration-E3/cases/case_015.json`, `assertions[2]` (script_check check_path_retrieval.py): stdout shows the retrieval step queried "cache policy" but the ground-truth document is indexed under "caching-strategy". Root cause: synonym mismatch in retrieval prompt.
 
 ### Step 3: Counterfactual Diagnosis
 
@@ -64,8 +67,8 @@ Select one direction by priority:
   "diagnosis": {
     "failed_cases": [15, 40],
     "trace_evidence": [
-      "iteration-E3/traces/case_15.md#stage-1: synonym mismatch in retrieval prompt",
-      "iteration-E3/traces/case_40.md#stage-1: same retrieval prompt issue, different synonyms"
+      "iteration-E3/cases/case_015.json assertions[2]: synonym mismatch in retrieval prompt (script_check stdout)",
+      "iteration-E3/cases/case_040.json assertions[2]: same retrieval prompt issue, different synonyms"
     ],
     "counterfactual": "Adding synonym expansion to the retrieval prompt should fix both cases without affecting passing cases"
   },

@@ -1,40 +1,127 @@
 # Memory Schema
 
+Reference: the layout here is aligned with the Meta-Harness paper (Lee et al. 2026, arXiv 2603.28052) §2 filesystem model:
+
+> "For every previous candidate harness, the filesystem stores the source code, evaluation scores, and execution traces, which the proposer retrieves via standard operations such as grep and cat rather than ingesting them as a single prompt."
+
+In our layout: source code lives in git (via commit hash recorded in meta.json), scores live in results.tsv (time-series) and iteration-E{N}/meta.json (per-iteration aggregate), execution traces live in iteration-E{N}/cases/case_{id}.json (one structured file per GT case).
+
 ## Workspace Structure
 
 ```
 <skill-name>-workspace/
 ├── evals/                      # GT and evaluation data (from Creator)
 ├── evolve/
-│   ├── results.tsv             # Per-iteration summary log
-│   ├── experiments.jsonl        # Per-iteration fine-grained memory
+│   ├── results.tsv             # Per-iteration summary log (time-series)
+│   ├── experiments.jsonl       # Per-iteration fine-grained diagnoses
 │   ├── evolve_plan.md          # Adaptive evaluation strategy
 │   ├── best_versions/          # Skill snapshots for each keep
 │   │   ├── iteration-1/
 │   │   ├── iteration-5/
 │   │   └── ...
-│   ├── iteration-E1/           # Per-iteration evaluation artifacts
-│   │   ├── benchmark.json      # aggregated stats (run_l2_eval.write_benchmark)
-│   │   ├── grading.json        # per-case grade dump (run_l2_eval.write_grading)
-│   │   └── traces/             # Execution traces (see below)
+│   ├── iteration-E1/           # Per-candidate namespace (paper §2)
+│   │   ├── meta.json           # Iteration metadata + aggregate snapshot
+│   │   └── cases/              # Per-case structured traces (grep-friendly)
+│   │       ├── case_001.json   # one file per GT case, zero-padded ids
+│   │       ├── case_002.json
+│   │       └── ...
 │   ├── iteration-E2/
-│   │   ├── benchmark.json
-│   │   ├── grading.json
-│   │   └── traces/
+│   │   ├── meta.json
+│   │   └── cases/
 │   └── ...
 └── ...
 ```
 
-### traces/ Directory
+### iteration-E{N}/meta.json
 
-Each `iteration-E{N}/traces/` directory stores raw execution traces for that iteration's evaluation. Traces are the primary diagnostic input for Phase 1 (Review) and Phase 2 (Ideate).
+Per-iteration metadata + aggregate snapshot. Written by `evolve_loop.write_meta_json`.
 
-Contents:
-- One trace file per evaluated case (e.g., `iteration-E{N}/traces/case_3.md`)
-- Each trace captures: the prompt sent, the full LLM output, assertion results, and any error/crash output
-- Traces for failed cases are the most important -- they are the evidence base for counterfactual diagnosis
+```json
+{
+  "iteration": 12,
+  "timestamp": "2026-04-09T15:23:17Z",
+  "commit": "e1795fd",
+  "split": "dev",
+  "aggregate": {
+    "total_cases": 31,
+    "total_assertions": 71,
+    "passed_assertions": 67,
+    "pass_rate": 0.9437,
+    "tokens": 0,
+    "duration": 0.49
+  },
+  "cases_dir": "cases/",
+  "cases_listed": [1, 2, 3, 7, 8, 12, ...]
+}
+```
 
-Retention policy: keep traces for the 5 most recent iterations and all kept iterations; delete the rest during cleanup.
+The `aggregate` sub-field is a convenience snapshot — the authoritative time-series lives in `results.tsv`. `commit` links back to git history (paper §2: "source code" lives in git, referenced here).
+
+### iteration-E{N}/cases/ Directory
+
+Per-case structured JSON files. Written by `evolve_loop.persist_cases`, which calls `evolve_loop.write_cases_to_dir` under the hood.
+
+Each case file (`case_{id}.json` with zero-padded id, e.g. `case_003.json`) captures paper §3's four trace components for that case:
+
+| Paper component | Field in case JSON |
+|---|---|
+| prompts | `prompt` + `skill_loaded.*` |
+| tool calls | `assertions[].stdout` / `stderr` / `exit_code` / `duration_ms` (script_check) |
+| model outputs | `assertions[].judge_verdicts` / `judge_verdicts[].reasoning` (path_hit / fact_coverage) |
+| state updates | `assertions[].match.location` / `nearest_match` (matching state) |
+
+Example (minimal schema — individual fields are filled progressively by meta-evolution):
+
+```json
+{
+  "case_id": 3,
+  "split": "dev",
+  "prompt": "What installation instructions does skill-evolver show...",
+  "skill_loaded": {
+    "path": "plugin/skills/skill-evolver/",
+    "size_bytes": 24331
+  },
+  "assertions": [
+    {
+      "index": 0,
+      "type": "contains",
+      "value": "https://github.com/anthropics/skills",
+      "description": "GitHub URL must be visible",
+      "pass": true
+    },
+    {
+      "index": 1,
+      "type": "script_check",
+      "value": "check_python_version_gate.py",
+      "description": "...",
+      "pass": false
+    }
+  ],
+  "summary": {
+    "total_assertions": 2,
+    "passed": 1,
+    "failed": 1,
+    "failed_indexes": [1]
+  }
+}
+```
+
+The per-case JSON layout is designed to be **grep-friendly**, matching paper §2's access pattern ("the proposer retrieves via standard operations such as grep and cat"):
+
+```bash
+# Find all failing cases across history
+grep -l '"pass": false' evolve/iteration-E*/cases/*.json
+
+# Find all script_check failures with their surrounding context
+grep -B1 -A3 '"type": "script_check"' evolve/iteration-E*/cases/case_003.json
+
+# Find which iterations had cases with failed_indexes > 0
+grep -l '"failed_indexes": \[.' evolve/iteration-E*/cases/*.json
+```
+
+Phase 1 Review returns **file paths**, not preloaded content — Phase 2 diagnosis uses the Read / Grep tools to pull selectively. This matches paper §2 verbatim ("rather than ingesting them as a single prompt") and keeps Phase 1 output O(kilobytes) regardless of how many iterations have accumulated.
+
+Retention policy: keep cases/ for the 5 most recent iterations and all kept iterations; delete the rest during cleanup (same policy as before, unchanged by this refactor).
 
 ---
 
@@ -134,5 +221,7 @@ At every Phase 1 (Review), read:
 1. `tail -20 <workspace>/evolve/results.tsv` -- observe trends and recent status
 2. `tail -10 <workspace>/evolve/experiments.jsonl` -- inspect fine-grained failure reasons and diagnoses
 3. `git log --oneline -20` -- review change history
-4. `ls <workspace>/evolve/iteration-E{N}/traces/` -- scan execution traces for failed cases
-5. Compute keeps/discards/crashes ratio -- determine whether stuck
+4. `cat <workspace>/evolve/iteration-E{N-1}/meta.json` -- most recent iteration's aggregate + cases_listed pointer
+5. `grep -l '"pass": false' <workspace>/evolve/iteration-E*/cases/*.json` -- locate failing cases across history (grep/cat model per paper §2)
+6. `Read` the specific `case_{id}.json` files for failing cases -- do NOT try to read all of them; Phase 1 provides `failed_case_paths` as a targeted pointer list
+7. Compute keeps/discards/crashes ratio -- determine whether stuck

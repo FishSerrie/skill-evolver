@@ -174,14 +174,32 @@ def phase_2_3_ideate_and_modify(skill_path: Path, workspace: Path,
     recent_failures = json.dumps(review.get("recent_failures", []), ensure_ascii=False)
     successful = json.dumps(review.get("successful_patterns", []), ensure_ascii=False)
 
-    # Meta-Harness: include trace evidence for active diagnosis
-    trace_context = ""
-    recent_traces = review.get("recent_traces", {})
-    if recent_traces:
-        trace_lines = []
-        for name, content in list(recent_traces.items())[:5]:
-            trace_lines.append(f"--- {name} ---\n{content}")
-        trace_context = "\n".join(trace_lines)
+    # Meta-Harness §2 filesystem access: give Claude file paths, not
+    # preloaded content. Claude uses the Read/Grep tools (both in CLI
+    # `claude -p` mode and in-conversation mode) to selectively pull
+    # case JSON content. This matches paper §2:
+    #   "the proposer retrieves via standard operations such as grep
+    #    and cat rather than ingesting them as a single prompt"
+    cases_dir = review.get("cases_dir")
+    failed_case_paths = review.get("failed_case_paths", [])
+    suggested_greps = review.get("suggested_greps", [])
+    last_meta_json = review.get("last_meta_json")
+
+    path_context_lines = []
+    if last_meta_json:
+        path_context_lines.append(
+            f"- Last iteration metadata: {last_meta_json}")
+    if cases_dir:
+        path_context_lines.append(
+            f"- Per-case JSONs (grep-friendly): {cases_dir}/case_*.json")
+    if failed_case_paths:
+        path_context_lines.append(
+            f"- Failing cases (read these first): {', '.join(failed_case_paths[:10])}")
+    if suggested_greps:
+        path_context_lines.append("- Suggested greps:")
+        for g in suggested_greps:
+            path_context_lines.append(f"    {g}")
+    path_context = "\n".join(path_context_lines)
 
     diagnosis_context = ""
     past_diagnoses = review.get("past_diagnoses", [])
@@ -198,16 +216,21 @@ Successful patterns: {successful}
 Current best metric: {review.get('current_best_metric', 'unknown')}
 Is stuck: {review.get('stuck', False)}
 
-{"## Execution Traces (from most recent eval)" + chr(10) + trace_context if trace_context else ""}
+{"## Trace files (read selectively with the Read and Grep tools — do NOT try to read all of them)" + chr(10) + path_context if path_context else ""}
 
 {"## Past Diagnoses (insights from prior iterations)" + chr(10) + diagnosis_context if diagnosis_context else ""}
 
-MANDATORY PROTOCOL (Meta-Harness active diagnosis):
-1. If traces are provided, READ THEM FIRST — identify the specific assertion
-   that failed and WHY it failed based on the trace evidence
-2. State your diagnosis: "Case X failed because [specific reason from trace]"
-3. Then propose ONE atomic change that directly addresses the diagnosed cause
-4. Do NOT guess — if no trace evidence points to a clear cause, say so
+MANDATORY PROTOCOL (Meta-Harness §2 active diagnosis):
+1. If failed_case_paths are listed, READ THEM FIRST using the Read tool —
+   each case_N.json has a "summary.failed_indexes" field pointing at
+   which assertions failed; use it to locate the exact failing assertion.
+2. For cross-iteration patterns, use the suggested greps with the Grep
+   tool — e.g. grep for "pass": false across iteration-E*/cases/*.json
+   to see if the same case has been failing repeatedly.
+3. State your diagnosis: "Case X assertion Y failed because [specific
+   reason grounded in what you read from the case JSON]".
+4. Then propose ONE atomic change that directly addresses the diagnosed cause.
+5. Do NOT guess — if no case JSON evidence points to a clear cause, say so.
 
 Read the SKILL.md at {skill_path / 'SKILL.md'}, then make your change.
 

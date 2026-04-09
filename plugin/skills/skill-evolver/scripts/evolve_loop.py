@@ -211,24 +211,60 @@ def phase_1_review(workspace: Path, skill_path: Path) -> dict:
     except (subprocess.TimeoutExpired, OSError):
         pass
 
-    # Meta-Harness: read execution traces from recent failed iterations
-    # Enables active diagnosis in Phase 2 (grep traces, not guess).
-    # Sort case files by numeric case id so case_10+ don't get truncated
-    # ahead of case_2..case_9 under lex sort (`case_10` precedes `case_2`).
-    recent_traces = {}
+    # Meta-Harness §2 filesystem access: give the proposer file paths,
+    # not preloaded content. The paper says the proposer "retrieves via
+    # standard operations such as grep and cat rather than ingesting them
+    # as a single prompt." So Phase 1 returns pointers + a few suggested
+    # grep patterns; Claude/proposer uses Read/Grep selectively in the
+    # next step (Phase 2 diagnosis).
+    #
+    # Why this matters: preloading all trace content into Phase 1's
+    # return value violated the paper's access model AND blew up Phase 1
+    # context size for long runs. With pointers, Phase 1 output stays
+    # O(kilobytes) regardless of how many iterations have accumulated.
+    last_iteration_dir = None
+    last_meta_json = None
+    cases_dir = None
+    failed_case_paths: list[str] = []
     if rows:
-        # Find the most recent iteration with traces
         for row in reversed(rows):
             iter_num = row.get("iteration", 0)
-            trace_dir = evolve_dir / f"iteration-E{iter_num}" / "traces"
-            if trace_dir.exists():
-                case_files = sorted(
-                    trace_dir.glob("case_*.md"),
-                    key=lambda p: _iter_num(p.stem),
-                )
-                for trace_file in case_files[:10]:
-                    recent_traces[trace_file.stem] = trace_file.read_text()[:2000]
-                break  # only the most recent iteration's traces
+            candidate_dir = evolve_dir / f"iteration-E{iter_num}"
+            if (candidate_dir / "meta.json").exists():
+                last_iteration_dir = str(
+                    candidate_dir.relative_to(workspace))
+                last_meta_json = str(
+                    (candidate_dir / "meta.json").relative_to(workspace))
+                candidate_cases = candidate_dir / "cases"
+                if candidate_cases.is_dir():
+                    cases_dir = str(candidate_cases.relative_to(workspace))
+                    # List failing case files by reading each case JSON's
+                    # summary.failed > 0. This is the only "content read"
+                    # Phase 1 does, and it only touches summary.failed
+                    # (one int per file), not the full trace. Keeps
+                    # return size small.
+                    case_files = sorted(
+                        candidate_cases.glob("case_*.json"),
+                        key=lambda p: _iter_num(p.stem),
+                    )
+                    for cf in case_files:
+                        try:
+                            data = json.loads(cf.read_text())
+                            if data.get("summary", {}).get("failed", 0) > 0:
+                                failed_case_paths.append(
+                                    str(cf.relative_to(workspace)))
+                        except (json.JSONDecodeError, OSError):
+                            continue
+                break  # only the most recent iteration with meta.json
+
+    suggested_greps = [
+        f"grep -l '\"pass\": false' {cases_dir}/*.json"
+        if cases_dir else None,
+        "grep -A3 '\"type\": \"script_check\"' "
+        "evolve/iteration-E*/cases/*.json",
+        "grep -B1 '\"failed_indexes\"' evolve/iteration-E*/cases/*.json",
+    ]
+    suggested_greps = [g for g in suggested_greps if g]
 
     # Collect past diagnoses (counterfactual insights from prior iterations)
     past_diagnoses = [
@@ -249,7 +285,12 @@ def phase_1_review(workspace: Path, skill_path: Path) -> dict:
         "recent_failures": recent_failures,
         "successful_patterns": successful_patterns,
         "git_log": git_log,
-        "recent_traces": recent_traces,
+        # NEW: file paths for the proposer to grep/cat (paper §2 model)
+        "last_iteration_dir": last_iteration_dir,
+        "last_meta_json": last_meta_json,
+        "cases_dir": cases_dir,
+        "failed_case_paths": failed_case_paths,
+        "suggested_greps": suggested_greps,
         "past_diagnoses": past_diagnoses,
     }
 
@@ -418,57 +459,118 @@ def phase_5_l1_gate(skill_path: Path, gt_path: Path | None = None) -> dict:
 # Phase 7: Log (fully automated)
 # ─────────────────────────────────────────────
 
-def write_traces_to_dir(traces_dir: Path,
-                        traces: dict | None) -> Path | None:
-    """Write per-case execution traces to an explicit target directory.
+def write_cases_to_dir(cases_dir: Path,
+                       cases: list | None) -> Path | None:
+    """Write per-case structured JSON files to an explicit target directory.
 
     Low-level primitive. Does not know about workspace/iteration
-    conventions — just takes a target directory and a trace dict and
-    writes one ``case_{case_id}.md`` per entry. Creates the directory
-    if it doesn't exist. Returns the directory on success, or None if
-    ``traces`` is empty.
+    conventions — just takes a target directory and a list of case
+    dicts and writes one ``case_{case_id}.json`` per entry. Creates the
+    directory if it doesn't exist. Returns the directory on success, or
+    None if ``cases`` is empty.
 
-    This is the shared helper used by both ``persist_traces`` (below,
-    which layers on the workspace/iteration naming convention) and
-    ``LocalEvaluator.full_eval`` (which takes an explicit ``traces_dir``
-    kwarg for in-conversation callers who want Meta-Harness files
-    written without going through the full phase_7_log pipeline).
+    Each case dict is expected to have at minimum ``case_id``, ``prompt``,
+    ``assertions``, and ``summary`` fields (the shape produced by
+    ``LocalEvaluator.full_eval``). The files are laid out to be
+    grep-friendly so a proposer can ``grep -l '"pass": false'
+    iteration-E*/cases/*.json`` to find failing cases across history,
+    matching the Meta-Harness paper §2 filesystem access pattern
+    (arXiv 2603.28052).
+
+    Case ids are zero-padded to 3 digits in the filename
+    (``case_003.json``) so lexicographic listing also gives numeric
+    order for typical skill GT sizes (< 1000 cases). This eliminates
+    the lex-sort bug family entirely for case file iteration.
     """
-    if not traces:
+    if not cases:
         return None
-    traces_dir = Path(traces_dir)
-    traces_dir.mkdir(parents=True, exist_ok=True)
-    for case_id, trace_content in traces.items():
-        trace_file = traces_dir / f"case_{case_id}.md"
-        trace_file.write_text(str(trace_content))
-    return traces_dir
+    cases_dir = Path(cases_dir)
+    cases_dir.mkdir(parents=True, exist_ok=True)
+    for case in cases:
+        case_id = case.get("case_id", "?")
+        # Zero-pad for lex-sort friendliness (case_003 < case_010)
+        try:
+            file_name = f"case_{int(case_id):03d}.json"
+        except (TypeError, ValueError):
+            file_name = f"case_{case_id}.json"
+        (cases_dir / file_name).write_text(
+            json.dumps(case, indent=2, ensure_ascii=False)
+        )
+    return cases_dir
 
 
-def persist_traces(workspace: Path, iteration: int,
-                   traces: dict | None) -> Path | None:
-    """Write per-case execution traces to ``iteration-E{N}/traces/``.
+def persist_cases(workspace: Path, iteration: int,
+                  cases: list | None) -> Path | None:
+    """Write per-case structured JSON to ``iteration-E{N}/cases/``.
 
-    Convention-path wrapper around :func:`write_traces_to_dir`. Used by
+    Convention-path wrapper around :func:`write_cases_to_dir`. Used by
     ``phase_7_log`` (CLI ``--run`` mode); in-conversation callers can
     call this directly after ``LocalEvaluator.full_eval`` to persist
-    ``result['traces']`` for the next iteration's Phase 1/2 diagnosis.
+    ``result['cases']`` for the next iteration's Phase 1/2 diagnosis.
 
     Args:
         workspace: the skill's workspace directory.
-        iteration: the E-iteration number the traces belong to.
-        traces: dict of ``{case_id: trace_content_str}``, or None/empty
-            to skip.
+        iteration: the E-iteration number the cases belong to.
+        cases: list of per-case structured dicts, or None/empty to skip.
 
     Returns:
-        Path to the created ``traces/`` directory, or None if nothing
+        Path to the created ``cases/`` directory, or None if nothing
         was written.
     """
-    if not traces:
+    if not cases:
         return None
-    return write_traces_to_dir(
-        workspace / "evolve" / f"iteration-E{iteration}" / "traces",
-        traces,
+    return write_cases_to_dir(
+        workspace / "evolve" / f"iteration-E{iteration}" / "cases",
+        cases,
     )
+
+
+def write_meta_json(workspace: Path, iteration: int,
+                    commit: str, split: str,
+                    eval_result: dict) -> Path:
+    """Write iteration-E{N}/meta.json — per-iteration metadata + aggregate.
+
+    meta.json replaces the old benchmark.json. It contains:
+      - iteration number, timestamp, commit hash, split
+      - aggregate stats (total cases, total assertions, pass rate)
+      - cases_dir pointer + list of case ids written to that dir
+
+    The paper §2 filesystem model stores source code + scores +
+    execution traces per candidate. In our layout:
+      - source code → git (via commit hash recorded here)
+      - scores      → results.tsv row (referenced by iteration number
+                      recorded here; the aggregate sub-field is a
+                      convenience snapshot for viewers that don't want
+                      to tail results.tsv)
+      - traces      → sibling cases/ directory, listed in cases_listed
+    """
+    from datetime import datetime, timezone
+    evolve_dir = workspace / "evolve"
+    iter_dir = evolve_dir / f"iteration-E{iteration}"
+    iter_dir.mkdir(parents=True, exist_ok=True)
+
+    cases = eval_result.get("cases") or []
+    cases_listed = [c.get("case_id") for c in cases]
+
+    meta = {
+        "iteration": iteration,
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "commit": commit,
+        "split": split,
+        "aggregate": {
+            "total_cases": len(cases),
+            "total_assertions": eval_result.get("total_assertions", 0),
+            "passed_assertions": eval_result.get("total_passed", 0),
+            "pass_rate": round(eval_result.get("pass_rate", 0.0), 4),
+            "tokens": eval_result.get("tokens", 0),
+            "duration": eval_result.get("duration", 0.0),
+        },
+        "cases_dir": "cases/",
+        "cases_listed": cases_listed,
+    }
+    out_path = iter_dir / "meta.json"
+    out_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False))
+    return out_path
 
 
 def phase_7_log(workspace: Path, iteration: int, commit: str,
@@ -476,12 +578,31 @@ def phase_7_log(workspace: Path, iteration: int, commit: str,
                 tokens: int, guard: str, status: str,
                 layer: str, description: str,
                 experiment: dict | None = None,
-                traces: dict | None = None) -> None:
-    """Append to results.tsv, experiments.jsonl, and write execution traces.
+                eval_result: dict | None = None,
+                split: str = "dev") -> None:
+    """Append to results.tsv, experiments.jsonl, and write per-iteration
+    metadata + per-case trace files.
 
-    Traces are delegated to :func:`persist_traces`, the shared helper
-    in-conversation executors can also call directly without going
-    through the full phase_7_log pipeline.
+    Per-case structured traces are delegated to :func:`persist_cases`,
+    the shared helper in-conversation executors can also call directly
+    without going through the full phase_7_log pipeline. The
+    per-iteration metadata (meta.json) is written by :func:`write_meta_json`.
+
+    Together these land the Meta-Harness §2 filesystem layout:
+
+        iteration-E{N}/
+        ├── meta.json              # metadata + aggregate
+        └── cases/
+            └── case_{id}.json     # one structured file per GT case
+
+    Args:
+        eval_result: the full dict returned by
+            ``LocalEvaluator.full_eval``. Contains ``cases`` (list of
+            structured per-case dicts) and aggregate fields
+            (``pass_rate``, ``total_assertions``, etc). Passed through
+            to ``persist_cases`` and ``write_meta_json`` — if None or
+            empty, neither meta.json nor cases/ are written (useful for
+            pure logging calls that don't have eval output handy).
     """
     evolve_dir = workspace / "evolve"
 
@@ -499,8 +620,10 @@ def phase_7_log(workspace: Path, iteration: int, commit: str,
         with open(jsonl_path, "a") as f:
             f.write(json.dumps(experiment, ensure_ascii=False) + "\n")
 
-    # Execution traces (shared helper — see docstring for in-conv usage)
-    persist_traces(workspace, iteration, traces)
+    # iteration-E{N}/meta.json + cases/ — paper §2 filesystem layout
+    if eval_result:
+        write_meta_json(workspace, iteration, commit, split, eval_result)
+        persist_cases(workspace, iteration, eval_result.get("cases"))
 
 
 # ─────────────────────────────────────────────

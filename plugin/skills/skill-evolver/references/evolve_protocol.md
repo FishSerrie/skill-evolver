@@ -38,8 +38,9 @@ tail -20 <workspace>/evolve/results.tsv
 # 3. Fine-grained memory (if exists)
 tail -10 <workspace>/evolve/experiments.jsonl
 
-# 4. Execution traces from the most recent failed iteration
-ls <workspace>/evolve/iteration-E{N}/traces/
+# 4. Most recent iteration's metadata + per-case traces (paper §2 grep/cat model)
+cat <workspace>/evolve/iteration-E{N-1}/meta.json
+grep -l '"pass": false' <workspace>/evolve/iteration-E*/cases/*.json
 ```
 
 **Extract from memory:**
@@ -49,7 +50,7 @@ ls <workspace>/evolve/iteration-E{N}/traces/
 - Which cases are fragile (easily regressed) -- use as regression guards
 - Whether stuck (5+ consecutive discards) -- switch to radical strategy
 
-**Read execution traces from `evolve/iteration-E{N}/traces/` for failed cases. Diagnose WHY failures happened, not just THAT they happened.**
+**Read per-case JSON files selectively from `evolve/iteration-E{N-1}/cases/` for failing cases. `phase_1_review` returns `failed_case_paths` — a list of the specific case JSON files with at least one failed assertion. Use the `Read` tool to open each one; use `Grep` for cross-iteration patterns. Do NOT try to ingest all cases — Phase 1 returns pointers, not content, per the Meta-Harness paper §2 access model ("the proposer retrieves via standard operations such as grep and cat rather than ingesting them as a single prompt"). Diagnose WHY failures happened, not just THAT they happened.**
 
 ---
 
@@ -183,7 +184,7 @@ Orchestrated by Claude (spawn subagent + grader scoring), with `scripts/run_l2_e
 1. **Execute**: Spawn subagent, load skill, run each prompt
 2. **Grade**: Read `agents/grader_agent.md` (or Creator's full version), judge each assertion
 3. **Collect timing**: Record tokens and duration
-4. **Aggregate**: `run_l2_eval.aggregate_grades()` -- produces benchmark.json
+4. **Aggregate**: `run_l2_eval.aggregate_grades()` -- produces stats dict consumed by `evolve_loop.write_meta_json` (which writes iteration-E{N}/meta.json); per-case details go to iteration-E{N}/cases/case_{id}.json via `evolve_loop.persist_cases`
 5. **Focus areas**: High-priority assertion types marked in evolve_plan.md
 
 ### Strict Eval (trigger conditions defined by evolve_plan, ~10 minutes)

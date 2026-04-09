@@ -326,7 +326,10 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
                         "baseline_rate": baseline_rate, "best_rate": best_rate}
             log(f"  {decision.upper()} — reverted")
 
-        # Phase 7: Log (with traces for Meta-Harness active diagnosis)
+        # Phase 7: Log (writes results.tsv + experiments.jsonl +
+        # iteration-E{N}/meta.json + iteration-E{N}/cases/case_{id}.json
+        # — the full paper §2 filesystem layout for next-iter Phase 1
+        # grep/cat access)
         elapsed = time.time() - t0
         phase_7_log(workspace, iteration, commit["commit_hash"],
                     new_rate * 100, delta * 100,
@@ -343,7 +346,8 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
                         "duration": new_eval.get("duration", 0.0),
                         "diagnosis": result_23.get("diagnosis", ""),
                     },
-                    traces=new_eval.get("traces"))
+                    eval_result=new_eval,
+                    split="dev")
         log(f"  Logged ({elapsed:.1f}s)")
 
         # Phase 8: Loop control

@@ -23,11 +23,36 @@ Evaluator Protocol — any evaluator must return this shape:
         "failed": [{"case_id": ..., "assertion": ...}],
         "tokens": int,            # total tokens consumed
         "duration": float,        # wall-clock seconds
-        "traces": {               # full output per case (for Meta-Harness diagnosis)
-            "case_1": "full skill output...",
+        "cases": [                # per-case structured trace (Meta-Harness
+            {                     # aligned: paper §2 "source code + scores +
+                "case_id": 3,     # execution traces" filesystem model)
+                "prompt": "...",
+                "skill_loaded": {"path": "...", "size_bytes": 24331},
+                "assertions": [
+                    {
+                        "index": 0,
+                        "type": "contains",
+                        "value": "...",
+                        "description": "...",
+                        "pass": True,
+                        # type-specific fields populated progressively
+                        # (match.location, nearest_match, stdout/stderr,
+                        #  judge_verdicts[].reasoning — see
+                        #  docs/private/migration-trace-architecture.md)
+                    },
+                    ...
+                ],
+                "summary": {"total_assertions": 3, "passed": 1, "failed": 2,
+                            "failed_indexes": [1, 2]},
+            },
             ...
-        },
+        ],
     }
+
+Reference: Lee et al. 2026, "Meta-Harness: End-to-End Optimization of Model
+Harnesses", arXiv 2603.28052. The paper's proposer reads a median of 82
+files/iteration via grep/cat; our per-case JSON layout under
+iteration-E{N}/cases/ matches that access pattern.
 """
 
 from __future__ import annotations
@@ -248,40 +273,48 @@ class LocalEvaluator(Evaluator):
 
     def full_eval(self, skill_path: Path, gt_path: Path,
                   split: str = "dev",
-                  traces_dir: Path | None = None) -> dict:
+                  cases_dir: Path | None = None) -> dict:
         """Run full eval against GT assertions.
 
         Args:
             skill_path: the skill to evaluate.
             gt_path: the GT evals.json file.
             split: which GT split to run (``dev`` / ``holdout`` / ``regression``).
-            traces_dir: optional directory to auto-persist per-case trace
-                files (``case_<id>.md`` under this dir). When set, the
-                returned ``traces`` dict is ALSO written to disk so
+            cases_dir: optional directory to auto-persist per-case JSON
+                files (``case_{id}.json`` under this dir). When set, the
+                returned ``cases`` list is ALSO written to disk so
                 in-conversation callers don't have to remember to call
-                ``persist_traces`` separately — essential for the next
+                ``persist_cases`` separately — essential for the next
                 iteration's Phase 1 / Phase 2 Meta-Harness diagnosis,
-                which reads these files. The conventional path is
-                ``<workspace>/evolve/iteration-E{N}/traces``.
+                which reads these files via grep/cat. The conventional
+                path is ``<workspace>/evolve/iteration-E{N}/cases``.
+
+        Reference: paper §2 filesystem layout. Each case gets its own
+        structured JSON file so the proposer can grep across iterations
+        (``grep -l '"pass": false' iteration-E*/cases/*.json``).
         """
         t0 = time.time()
         skill_content = self._load_skill_corpus(skill_path)
+        skill_md_path = skill_path / "SKILL.md"
+        skill_md_size = skill_md_path.stat().st_size if skill_md_path.exists() else 0
         data = json.loads(gt_path.read_text())
 
-        cases = data if isinstance(data, list) else data.get("evals", [])
+        raw_cases = data if isinstance(data, list) else data.get("evals", [])
         if split:
-            cases = [c for c in cases if c.get("split", "dev") == split]
+            raw_cases = [c for c in raw_cases if c.get("split", "dev") == split]
 
         total_p = total_t = 0
         failed = []
-        traces = {}
+        cases = []
 
-        for c in cases:
+        for c in raw_cases:
             case_id = c.get("id", "?")
-            # Build trace: record what was evaluated and how
-            case_trace_lines = [f"Case {case_id}: {c.get('prompt', '')}\n"]
+            case_prompt = c.get("prompt", "")
+            case_assertions = []
+            case_passed = 0
+            case_failed_indexes = []
 
-            for a in c.get("assertions", []):
+            for idx, a in enumerate(c.get("assertions", [])):
                 total_t += 1
                 atype = a.get("type", "contains")
                 val = a.get("value", "")
@@ -290,26 +323,54 @@ class LocalEvaluator(Evaluator):
                 ok = self._evaluate_assertion(
                     atype, val, a, skill_content, skill_path)
 
-                case_trace_lines.append(
-                    f"  [{atype}] {'PASS' if ok else 'FAIL'}: {desc}")
+                # Structured assertion record. Type-specific fields (match
+                # location, stdout/stderr, judge reasoning) will be filled
+                # in progressively by later meta-evolution iterations —
+                # the schema has room for them without breaking grep.
+                assertion_record = {
+                    "index": idx,
+                    "type": atype,
+                    "value": val,
+                    "description": desc,
+                    "pass": ok,
+                }
+                case_assertions.append(assertion_record)
 
                 if ok:
                     total_p += 1
+                    case_passed += 1
                 else:
+                    case_failed_indexes.append(idx)
                     failed.append({
                         "case_id": case_id,
                         "assertion": desc,
                         "type": atype,
                     })
 
-            traces[str(case_id)] = "\n".join(case_trace_lines)
+            case_total = len(case_assertions)
+            cases.append({
+                "case_id": case_id,
+                "split": c.get("split", "dev"),
+                "prompt": case_prompt,
+                "skill_loaded": {
+                    "path": str(skill_path),
+                    "size_bytes": skill_md_size,
+                },
+                "assertions": case_assertions,
+                "summary": {
+                    "total_assertions": case_total,
+                    "passed": case_passed,
+                    "failed": case_total - case_passed,
+                    "failed_indexes": case_failed_indexes,
+                },
+            })
 
-        # Auto-persist traces when an explicit directory is requested.
-        # Lazy-import the helper to avoid a top-level cycle with
-        # evolve_loop (which already imports from this module).
-        if traces_dir is not None and traces:
-            from evolve_loop import write_traces_to_dir
-            write_traces_to_dir(Path(traces_dir), traces)
+        # Auto-persist cases when an explicit directory is requested.
+        # Lazy-import to avoid a top-level cycle with evolve_loop (which
+        # already imports from this module).
+        if cases_dir is not None and cases:
+            from evolve_loop import write_cases_to_dir
+            write_cases_to_dir(Path(cases_dir), cases)
 
         duration = time.time() - t0
         judge = self._llm_judge
@@ -322,7 +383,7 @@ class LocalEvaluator(Evaluator):
             "failed": failed,
             "tokens": tokens,
             "duration": round(duration, 2),
-            "traces": traces,
+            "cases": cases,
         }
 
     def _evaluate_assertion(self, atype: str, val: str, assertion: dict,

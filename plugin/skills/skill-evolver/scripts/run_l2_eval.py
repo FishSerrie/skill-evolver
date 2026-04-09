@@ -5,14 +5,18 @@ Usage: python run_l2_eval.py <skill-path> --gt <gt-json> --workspace <workspace>
 
 This script provides library functions for L2 evaluation. The actual eval
 execution (spawn subagent, run skill, collect output) is orchestrated by Claude.
-This script handles: GT loading, result aggregation, and results.tsv writing.
+This script handles: GT loading, result aggregation, and stats calculation.
+
+Per-iteration filesystem outputs (meta.json + cases/case_{id}.json) are
+written by ``evolve_loop.write_meta_json`` and ``evolve_loop.persist_cases``
+— see ``docs/private/migration-trace-architecture.md`` for the rationale
+and the Meta-Harness (arXiv 2603.28052) §2 alignment.
 """
 
 import argparse
 import json
 import math
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -91,36 +95,14 @@ def aggregate_grades(gradings: list[dict]) -> dict:
     }
 
 
-def write_benchmark(workspace: Path, iteration: int, benchmark: dict) -> Path:
-    """Write benchmark.json to the evolve iteration directory."""
-    evolve_dir = workspace / "evolve"
-    iter_dir = evolve_dir / f"iteration-E{iteration}"
-    iter_dir.mkdir(parents=True, exist_ok=True)
-
-    out_path = iter_dir / "benchmark.json"
-    out_path.write_text(json.dumps({
-        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "iteration": iteration,
-        **benchmark,
-    }, indent=2))
-
-    return out_path
-
-
-def write_grading(workspace: Path, iteration: int, gradings: list[dict]) -> Path:
-    """Write grading.json to the evolve iteration directory."""
-    evolve_dir = workspace / "evolve"
-    iter_dir = evolve_dir / f"iteration-E{iteration}"
-    iter_dir.mkdir(parents=True, exist_ok=True)
-
-    out_path = iter_dir / "grading.json"
-    out_path.write_text(json.dumps({
-        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "iteration": iteration,
-        "cases": gradings,
-    }, indent=2))
-
-    return out_path
+# NOTE: write_benchmark() and write_grading() used to live here.
+# Removed in the Meta-Harness alignment refactor — per-iteration
+# outputs now go through evolve_loop.write_meta_json (iteration
+# metadata + aggregate) and evolve_loop.persist_cases (per-case
+# structured JSON). The paper §2 filesystem model stores three
+# things per candidate: source code (git), scores (results.tsv +
+# meta.json), execution traces (cases/*.json). See
+# docs/private/migration-trace-architecture.md for the full rationale.
 
 
 def main():
@@ -148,7 +130,9 @@ def main():
 
     print(f"L2 eval: {len(cases)} {args.split} cases loaded.", file=sys.stderr)
     print("Note: Actual eval execution requires Claude to orchestrate subagents.", file=sys.stderr)
-    print("Use the library functions (load_gt, aggregate_grades, write_benchmark) programmatically.", file=sys.stderr)
+    print("Use the library functions (load_gt, aggregate_grades) here, then call "
+          "evolve_loop.write_meta_json + evolve_loop.persist_cases to land "
+          "the per-iteration filesystem outputs.", file=sys.stderr)
 
 
 if __name__ == "__main__":

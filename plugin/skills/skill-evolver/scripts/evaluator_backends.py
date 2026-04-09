@@ -72,12 +72,12 @@ class CreatorEvaluator(Evaluator):
 
     def full_eval(self, skill_path: Path, gt_path: Path,
                   split: str = "dev",
-                  traces_dir: Path | None = None) -> dict:
+                  cases_dir: Path | None = None) -> dict:
         # CreatorEvaluator uses the same binary approach as LocalEvaluator
         # but can additionally invoke Creator's scripts for trigger testing.
-        # Forward traces_dir so auto-persistence reaches the delegate.
+        # Forward cases_dir so auto-persistence reaches the delegate.
         result = self._fallback.full_eval(
-            skill_path, gt_path, split, traces_dir=traces_dir)
+            skill_path, gt_path, split, cases_dir=cases_dir)
 
         # Try to enhance with Creator's trigger evaluation if available
         if self.creator_path:

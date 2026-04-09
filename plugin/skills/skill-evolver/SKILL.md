@@ -43,7 +43,7 @@ commands directly; Claude runs them when handling a user request.
 # Phase 0 — workspace bootstrap (deterministic, runs once)
 python3 scripts/setup_workspace.py <skill-path>
 
-# Phase 0 — baseline eval (auto-persists traces for Phase 1 diagnosis)
+# Phase 0 — baseline eval (auto-persists per-case JSON for Phase 1 diagnosis)
 python3 -c "
 import sys; sys.path.insert(0, 'scripts')
 from evaluators import LocalEvaluator
@@ -52,7 +52,7 @@ r = LocalEvaluator().full_eval(
     Path('<skill-path>'),
     Path('<workspace>/evals/evals.json'),
     split='dev',
-    traces_dir=Path('<workspace>/evolve/iteration-E0/traces'),
+    cases_dir=Path('<workspace>/evolve/iteration-E0/cases'),
 )
 print(r['total_passed'], '/', r['total_assertions'])
 "
@@ -60,9 +60,11 @@ print(r['total_passed'], '/', r['total_assertions'])
 
 After Phase 0, follow `references/evolve_protocol.md` to run Phases
 1–8 directly in the conversation: read memory (`results.tsv` +
-`experiments.jsonl` + recent `iteration-E*/traces/`), diagnose failures,
-make ONE atomic change with the Edit tool, `git commit`, re-eval, gate,
-log, loop.
+`experiments.jsonl` + most-recent `iteration-E*/meta.json` + the
+specific failing `iteration-E*/cases/case_{id}.json` files that
+Phase 1 lists in `failed_case_paths`), diagnose failures, make ONE
+atomic change with the Edit tool, `git commit`, re-eval, gate, log,
+loop.
 
 ### Unattended / background runs
 
@@ -196,12 +198,22 @@ some-project/
         ├── results.tsv             ← experiment log
         ├── experiments.jsonl       ← fine-grained memory
         ├── best_versions/          ← best skill snapshots
-        ├── iteration-E1/           ← Evolve eval artifacts (E-prefix distinguishes from Creator)
-        │   ├── benchmark.json      ← aggregated stats (run_l2_eval.write_benchmark)
-        │   ├── grading.json        ← per-case grades (run_l2_eval.write_grading)
-        │   └── traces/             ← per-case execution traces (Meta-Harness diagnosis)
+        ├── iteration-E1/           ← Evolve per-iteration artifacts (E-prefix distinguishes from Creator)
+        │   ├── meta.json           ← iteration metadata + aggregate snapshot (evolve_loop.write_meta_json)
+        │   └── cases/              ← per-case structured traces (paper §2 grep/cat model)
+        │       ├── case_001.json   ← one file per GT case, zero-padded ids
+        │       ├── case_002.json
+        │       └── ...
         └── summary.md              ← final report
 ```
+
+The per-case JSON files hold the paper's four trace components (prompts / tool calls / model outputs / state updates) in structured form. Grep-friendly for cross-iteration pattern detection:
+
+```bash
+grep -l '"pass": false' <workspace>/evolve/iteration-E*/cases/*.json
+```
+
+See `references/memory_schema.md` for the full schema and the Meta-Harness (arXiv 2603.28052) alignment rationale.
 
 **Why a shared workspace:**
 - The workspace is a sibling directory, not inside the skill — it is naturally excluded when packaging
@@ -252,10 +264,12 @@ suggestions are printed but the user decides whether to proceed.
 ### Improve Mode
 
 Human-directed targeted fix. Claude reads the latest `iteration-E{N}/
-traces/` files to diagnose WHY specific cases fail, proposes changes
-citing case IDs + trace evidence, applies approved edits with the Edit
-tool (one atomic change at a time), re-runs one eval round, and
-reports before/after. **Human decides WHAT to change; Claude provides
+cases/case_{id}.json` files (selectively, via the Read tool — not all
+of them, only the ones in `phase_1_review`'s `failed_case_paths`) to
+diagnose WHY specific cases fail, proposes changes citing case IDs +
+per-assertion evidence, applies approved edits with the Edit tool
+(one atomic change at a time), re-runs one eval round, and reports
+before/after. **Human decides WHAT to change; Claude provides
 diagnostic evidence.** Unlike Evolve mode (which decides autonomously).
 
 ### Benchmark Mode
@@ -368,7 +382,7 @@ external callers don't need to know where a symbol physically lives.
 
 | File | Owns | Lines |
 |---|---|---:|
-| `scripts/evolve_loop.py` | Phase functions 0/1/4/5/7/8 + `git_revert_last` + `save_best_version` + `persist_traces` + `write_traces_to_dir` + `_list_untracked` + PEP 562 `__getattr__` re-export of orchestrator symbols + `python scripts/evolve_loop.py` CLI entry (delegates to `orchestrator.main`) | 640 |
+| `scripts/evolve_loop.py` | Phase functions 0/1/4/5/7/8 + `git_revert_last` + `save_best_version` + `persist_cases` + `write_cases_to_dir` + `write_meta_json` + `_list_untracked` + PEP 562 `__getattr__` re-export of orchestrator symbols + `python scripts/evolve_loop.py` CLI entry (delegates to `orchestrator.main`) | 763 |
 | `scripts/orchestrator.py` | `run_evolve_loop` (the 8-Phase driver) + `main` (argparse + subcommand dispatch) + `_eval_holdout_or_none` + empty-dev-GT guard + revert-fail abort | 544 |
 | `scripts/gate.py` | `phase_6_gate_decision` (pure function, stdlib only) | 134 |
 | `scripts/llm.py` | `LLM_BACKENDS` registry + `_call_llm` / `_call_llm_http` / `_call_claude` + `phase_2_3_ideate_and_modify` (with safe-default JSON shape normalization) + `run_l2_eval_via_claude` + `_local_eval` + `auto_construct_gt` + `_validate_gt_schema` | 455 |
