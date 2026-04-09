@@ -164,7 +164,27 @@ Every assertion record has these common fields: `index`, `type`, `value`, `descr
  "expected_path": "/abs/path/to/skill/references/missing.md"}
 ```
 
-**`json_schema`** — just `{"pass": bool}` (no extras yet)
+**`json_schema`** — four structured outcomes, each with diagnostic info
+```json
+// Success
+{"type": "json_schema", "value": "<schema>", "pass": true,
+ "extracted_from": "fenced_code_block"}
+
+// GT schema itself didn't parse
+{"type": "json_schema", "value": "<schema>", "pass": false,
+ "schema_error": "<json decoder error>"}
+
+// Content JSON didn't parse
+{"type": "json_schema", "value": "<schema>", "pass": false,
+ "parse_error": "<json decoder error>",
+ "extracted_from": "fenced_code_block" | "raw_content"}
+
+// Parsed OK but failed a constraint — path pinpoints it
+{"type": "json_schema", "value": "<schema>", "pass": false,
+ "schema_mismatch_path": "$.items[2].name",
+ "extracted_from": "raw_content"}
+```
+`schema_mismatch_path` uses dotted notation (`$.a.b[0].c`) so the proposer can jump straight to the offending field without re-running the validator.
 
 ### case.skill_loaded — state updates snapshot
 

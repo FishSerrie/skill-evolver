@@ -271,6 +271,13 @@ they're the difference between guessing and diagnosing.
   assertion.type == "fact_coverage" online mode
     BOTH: keyword_hits: [str], keyword_total
 
+  assertion.type == "json_schema"
+    PASS: extracted_from ("fenced_code_block" | "raw_content")
+    FAIL, schema itself broken: schema_error
+    FAIL, content JSON didn't parse: parse_error, extracted_from
+    FAIL, schema mismatch: schema_mismatch_path ("$.items[2].name"),
+                           extracted_from
+
 {"## Past Diagnoses (insights from prior iterations)" + chr(10) + diagnosis_context if diagnosis_context else ""}
 
 MANDATORY PROTOCOL (Meta-Harness §2 active diagnosis):
