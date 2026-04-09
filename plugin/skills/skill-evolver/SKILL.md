@@ -83,10 +83,31 @@ is triggered by the natural-language user asks in the table above.
 conversation**, because the CLI's subprocess starts with empty context
 and can't audit its own protocol against the code it's running.
 
-**Prerequisites:**
-- **skill-creator installed (hard dependency)** — Evolver refuses to start without it. See installation guide below.
-- GT data (test cases + assertions) should be prepared in advance; if unavailable, evolve mode auto-generates them via Creator
-- The skill directory **must be under git** (if uninitialized, Phase 0 forces `git init`; if git is not installed, install it first)
+## Prerequisites
+
+Everything skill-evolver depends on, in two groups — what's needed for
+the natural-language conversation path (the primary path), and what's
+additionally needed for the CLI `--run` fallback.
+
+### Hard dependencies (both paths)
+
+| Dependency | Why | How to install / check |
+|---|---|---|
+| **Python 3.10+** | Uses PEP 604 union type hints (`X \| None`) without `from __future__ import annotations` in `evolve_loop.py`, `common.py`, `run_l1_gate.py`, `run_l2_eval.py`, `setup_workspace.py`, `aggregate_results.py`. Runtime type evaluation fails on 3.9 or older. | `python3 --version` → must be ≥ 3.10 |
+| **git** | `phase_0_setup` requires git (auto-inits if skill dir isn't a repo, refuses if `git` is not on PATH); `phase_4_commit` uses `git add -u` + `git commit`; `git_revert_last` uses `git revert`; `phase_1_review` reads `git log` for Phase 2 diagnosis. No fallback — see `references/evolve_protocol.md` Phase 4 Step 3. | `git --version` or install per platform: `brew install git` / `apt install git` / [git-scm.com](https://git-scm.com/download) |
+| **skill-creator** (plugin) | Hard dependency. `require_creator()` in `scripts/common.py` raises `CreatorNotFoundError` with install instructions if absent. Needed for L1 gate validation (`quick_validate.py`), `grader.md` / `comparator.md` / `analyzer.md` agent pointers, trigger-f1 eval (`run_eval.py`), and optional `eval-viewer/generate_review.py` post-run HTML report. | See "Installing skill-creator" below |
+
+### Soft dependencies (CLI `--run` mode only — primary path doesn't need them)
+
+| Dependency | Why | Fallback |
+|---|---|---|
+| **LLM CLI on PATH** — one of `claude`, `codex`, `opencode` | CLI `--run` mode's Phase 2+3 (`phase_2_3_ideate_and_modify`) shells out via `_call_llm()` in `scripts/llm.py` to invoke LLM reasoning in a subprocess. Auto-detected in that order; override with `LLM_BACKEND=<name>`. | HTTP endpoint via `EVOLVER_LLM_URL` env var; or use the primary in-conversation path where Claude IS the LLM and no subprocess is needed. |
+| **GT data** (`<workspace>/evals/evals.json`) | Supplies the test cases + assertions every iteration is scored against. | `auto_construct_gt` (in `scripts/llm.py`) generates a starter GT from the skill's SKILL.md when missing — requires an LLM CLI, so only works in CLI mode. In the conversation path, Claude constructs GT interactively with the user. |
+
+### What the primary (conversation) path does NOT need
+
+- **No LLM CLI subprocess** — Claude (the conversation itself) is the LLM. The in-conversation executor uses the Edit tool for mutations and a few Python one-liners for deterministic helpers; there is zero `claude -p` shell-out.
+- **No pre-existing GT** — if evals.json is missing, Claude interviews the user or infers cases from the skill's SKILL.md inside the conversation, using Creator's test-case methodology by reference.
 
 ### Installing skill-creator
 
