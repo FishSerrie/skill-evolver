@@ -1,27 +1,87 @@
 ---
 name: skill-evolver
-description: "Automatic skill evolution engine — powered by skill-creator's evaluation capabilities + autoresearch's autonomous iteration methodology. Core: Creator handles evaluation and grading, AutoResearch-style loop handles search and optimization, Evolver adds gating and memory for fully automatic evolution. Supports evolve/eval/create/benchmark/improve modes. Triggers on: '/skill-evolver', 'evolve skill', 'optimize skill', 'skill eval', 'skill benchmark', 'make skill better', 'auto-optimize', 'improve skill', 'create skill', 'skill evolver', '进化 skill', '优化 skill', 'skill 评测', '让 skill 变强', '自动优化', '改进 skill', '创建 skill'."
+description: "Automatic skill evolution engine — powered by skill-creator's evaluation capabilities + autoresearch's autonomous iteration methodology. Core: Creator handles evaluation and grading, AutoResearch-style loop handles search and optimization, Evolver adds gating and memory for fully automatic evolution. Supports evolve/eval/create/benchmark/improve modes. Triggers on any natural-language user request to optimize / improve / tune / evolve / evaluate / benchmark a skill: '/skill-evolver', '/evolve', 'evolve skill', 'optimize skill', 'optimize this skill', 'optimize my skill', 'optimize the skill at <path>', 'improve skill', 'improve this skill', 'improve my xxx skill', 'tune skill', 'tune this skill', 'make skill better', 'make this skill better', 'make the skill stronger', 'auto-optimize', 'use skill-evolver', 'use skill-evolver to optimize', 'run skill-evolver on', 'skill eval', 'skill benchmark', 'evaluate this skill', 'benchmark these skills', 'create skill', 'create a new skill', 'skill evolver', '进化 skill', '优化 skill', '优化这个 skill', '帮我优化 skill', '帮我优化这个 skill', '帮我优化 xxx skill', '用 skill-evolver 优化', '用 skill-evolver 调一下', 'skill 评测', '让 skill 变强', '让这个 skill 变强', '自动优化', '改进 skill', '改进这个 skill', '调一下这个 skill', '创建 skill', '新建一个 skill'."
 ---
 
 # Skill Evolver
 
 A unified skill optimizer centered on ground-truth data, powered by Creator for evaluation and AutoResearch for search.
 
-## Quick Start
+## How the user invokes it
+
+Users invoke skill-evolver with natural-language requests — Claude
+recognizes the intent from the description triggers above and runs the
+8-Phase loop on the skill they asked about. The user does NOT think
+about CLI flags, subprocess modes, or script paths; Claude handles all
+the mechanics internally. Common user asks that should activate this
+skill:
+
+| What the user says                              | What Claude does                  |
+|---|---|
+| "Help me optimize the skill at `./my-pdf-skill`" | Run evolve mode on that path      |
+| "帮我优化一下这个 skill" (with a path)            | Run evolve mode on that path      |
+| "Use skill-evolver to tune `./foo`"              | Run evolve mode on that path      |
+| "/skill-evolver evolve ./my-skill"               | Run evolve mode on that path      |
+| "/evolve ./my-skill"                             | Run evolve mode on that path      |
+| "Evaluate this skill, don't change anything"     | Run eval mode only                |
+| "Compare `./v1` and `./v2`"                      | Run benchmark mode                |
+| "Create a new skill for X"                       | Run create mode (Creator workflow)|
+| "Show me what the first iteration would change" | Run evolve with `--dry-run`       |
+
+Once triggered, Claude takes over and **executes the 8-Phase loop
+directly in the conversation** (reading memory, diagnosing failures,
+making atomic edits, committing, gating, logging) without asking the
+user to run any commands. The user watches the progress in the
+conversation and can audit every step.
+
+## Quick Start (for Claude — the executor)
+
+This section is Claude's internal recipe. End users don't run these
+commands directly; Claude runs them when handling a user request.
 
 ```bash
-# Fully automatic optimization of an existing skill (core feature — one command runs the entire loop)
-python3 scripts/evolve_loop.py ./my-skill/ --gt ./evals.json --run --max-iterations 20
+# Phase 0 — workspace bootstrap (deterministic, runs once)
+python3 scripts/setup_workspace.py <skill-path>
 
-# Evaluate an existing skill
-/skill-evolver eval ./my-skill/ --gt ./evals.json
-
-# Create a new skill from scratch
-/skill-evolver create
-
-# Compare two versions
-/skill-evolver benchmark ./skill-v1/ ./skill-v2/ --gt ./evals.json
+# Phase 0 — baseline eval (auto-persists traces for Phase 1 diagnosis)
+python3 -c "
+import sys; sys.path.insert(0, 'scripts')
+from evaluators import LocalEvaluator
+from pathlib import Path
+r = LocalEvaluator().full_eval(
+    Path('<skill-path>'),
+    Path('<workspace>/evals/evals.json'),
+    split='dev',
+    traces_dir=Path('<workspace>/evolve/iteration-E0/traces'),
+)
+print(r['total_passed'], '/', r['total_assertions'])
+"
 ```
+
+After Phase 0, follow `references/evolve_protocol.md` to run Phases
+1–8 directly in the conversation: read memory (`results.tsv` +
+`experiments.jsonl` + recent `iteration-E*/traces/`), diagnose failures,
+make ONE atomic change with the Edit tool, `git commit`, re-eval, gate,
+log, loop.
+
+### Unattended / background runs
+
+For CI runs, scheduled sweeps, or any run without a human/agent in the
+conversation, there is a CLI fallback that spawns `claude -p`
+subprocesses for LLM reasoning:
+
+```bash
+python3 scripts/evolve_loop.py ./my-skill/ --gt ./evals.json --run --max-iterations 20
+python3 scripts/evolve_loop.py ./my-skill/ --gt ./evals.json --dry-run   # preview only
+python3 scripts/evolve_loop.py ./my-skill/ --cleanup                     # prune eval artifacts
+python3 scripts/evolve_loop.py ./my-skill/ --cleanup-versions            # prune best_versions
+```
+
+CLI mode is the **fallback**, not the primary path — the primary path
+is triggered by the natural-language user asks in the table above.
+**Meta-optimization (optimizing skill-evolver itself) only works in
+conversation**, because the CLI's subprocess starts with empty context
+and can't audit its own protocol against the code it's running.
 
 **Prerequisites:**
 - **skill-creator installed (hard dependency)** — Evolver refuses to start without it. See installation guide below.
