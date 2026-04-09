@@ -74,8 +74,8 @@ def gate_decision(current, baseline, policy):
         <= baseline.duration_mean * (1 + policy.max_latency_increase)
     )
     regression_ok = (
-        current.regression_pass_rate
-        >= baseline.regression_pass_rate * (1 - policy.regression_tolerance)
+        current.regression_pass
+        >= baseline.regression_pass * (1 - policy.regression_tolerance)
     )
 
     # ---- Holdout consistency hard guard (anti-Goodhart) ----

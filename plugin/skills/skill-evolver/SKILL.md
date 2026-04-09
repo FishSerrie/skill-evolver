@@ -368,14 +368,14 @@ external callers don't need to know where a symbol physically lives.
 
 | File | Owns | Lines |
 |---|---|---:|
-| `scripts/evolve_loop.py` | Phase functions 0/1/4/5/7/8 + `git_revert_last` + `save_best_version` + `persist_traces` + `write_traces_to_dir` + PEP 562 `__getattr__` re-export of orchestrator symbols + `python scripts/evolve_loop.py` CLI entry (delegates to `orchestrator.main`) | 580 |
-| `scripts/orchestrator.py` | `run_evolve_loop` (the 8-Phase driver) + `main` (argparse + subcommand dispatch) + `_eval_holdout_or_none` | 467 |
+| `scripts/evolve_loop.py` | Phase functions 0/1/4/5/7/8 + `git_revert_last` + `save_best_version` + `persist_traces` + `write_traces_to_dir` + `_list_untracked` + PEP 562 `__getattr__` re-export of orchestrator symbols + `python scripts/evolve_loop.py` CLI entry (delegates to `orchestrator.main`) | 640 |
+| `scripts/orchestrator.py` | `run_evolve_loop` (the 8-Phase driver) + `main` (argparse + subcommand dispatch) + `_eval_holdout_or_none` + empty-dev-GT guard + revert-fail abort | 544 |
 | `scripts/gate.py` | `phase_6_gate_decision` (pure function, stdlib only) | 134 |
-| `scripts/llm.py` | `LLM_BACKENDS` registry + `_call_llm` / `_call_llm_http` / `_call_claude` + `phase_2_3_ideate_and_modify` + `run_l2_eval_via_claude` + `_local_eval` + `auto_construct_gt` | 389 |
+| `scripts/llm.py` | `LLM_BACKENDS` registry + `_call_llm` / `_call_llm_http` / `_call_claude` + `phase_2_3_ideate_and_modify` (with safe-default JSON shape normalization) + `run_l2_eval_via_claude` + `_local_eval` + `auto_construct_gt` + `_validate_gt_schema` | 455 |
 | `scripts/cleanup.py` | `_iter_num` (shared numeric-sort helper) + `cleanup_best_versions` + `cleanup_eval_outputs` + `_try_launch_eval_viewer` | 153 |
 | `scripts/evaluators.py` | `Evaluator` ABC + `BinaryLLMJudge` + `LocalEvaluator` + `_basic_schema_check` + `get_evaluator` factory (lazy-imports backends) + `parse_evaluator_from_plan` + `EVALUATOR_NAMES` | 608 |
 | `scripts/evaluator_backends.py` | `CreatorEvaluator` + `ScriptEvaluator` + `PytestEvaluator` (lazy-loaded by factory) | 321 |
-| `scripts/common.py` | Creator path discovery + `find_workspace` + `parse_skill_md` + `validate_frontmatter` + `require_creator` / `CreatorNotFoundError` | 400 |
+| `scripts/common.py` | Python 3.10+ version gate + Creator path discovery + `find_workspace` + `parse_skill_md` + `validate_frontmatter` + `require_creator` / `CreatorNotFoundError` | 428 |
 | `scripts/aggregate_results.py` | `parse_results_tsv` + `calculate_summary` + `format_markdown` + `run_benchmark` A/B + `format_benchmark_markdown` | 389 |
 | `scripts/run_l1_gate.py` | L1 quick-gate CLI helper + `run_l1_gate` library function | 193 |
 | `scripts/run_l2_eval.py` | L2 eval library helpers: `load_gt` + `aggregate_grades` + `write_benchmark` + `write_grading` | 155 |

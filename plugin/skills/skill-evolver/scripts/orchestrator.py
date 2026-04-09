@@ -134,6 +134,22 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
     log("Phase 0: Baseline eval")
     baseline = evaluator.full_eval(skill_path, gt_path)
     baseline_rate = baseline["pass_rate"]
+    # Red-team finding #7 (iter 30): reject empty dev split. With zero
+    # assertions, pass_rate collapses to 0.0 (the `if total_t else 0`
+    # guard in LocalEvaluator), giving the gate no signal at all and
+    # confusing the user as to why no iterations ever improve. An
+    # empty dev GT is a data-prep error, not a valid loop state.
+    if baseline.get("total_assertions", 0) == 0:
+        msg = (
+            f"Phase 0 baseline: GT at {gt_path} has 0 assertions in the "
+            f"dev split. The evolve loop needs at least one scoreable "
+            f"case to produce a signal for the Phase 6 gate. Add at "
+            f"least one dev case to evals.json (see references/"
+            f"eval_strategy.md for templates) or pass a different GT "
+            f"via --gt."
+        )
+        log(f"ABORT: {msg}")
+        return {"success": False, "error": msg}
     baseline_holdout = _eval_holdout_or_none(evaluator, skill_path, gt_path)
     log(f"Baseline: {baseline['total_passed']}/{baseline['total_assertions']} = {baseline_rate:.0%}"
         + (f" | holdout {baseline_holdout:.0%}" if baseline_holdout is not None else " | holdout n/a"))
@@ -229,7 +245,23 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
         l1 = evaluator.quick_gate(skill_path, gt_path)
         log(f"  L1: {'PASS' if l1['pass'] else 'FAIL'}")
         if not l1["pass"]:
-            git_revert_last(skill_path)
+            # Red-team finding #8 (iter 30): check revert actually
+            # succeeded. If git revert fails (merge conflict, detached
+            # HEAD, hook veto, etc.) and we keep iterating, the broken
+            # mutation contaminates the next iteration's baseline and
+            # the entire run becomes unreliable. Abort instead.
+            revert = git_revert_last(skill_path)
+            if not revert.get("success"):
+                msg = (
+                    f"L1 fail at iter {iteration}; git revert ALSO failed "
+                    f"({revert.get('output', 'no output')}). Working tree "
+                    f"is in an undefined state. Aborting loop."
+                )
+                log(f"  ABORT: {msg}")
+                phase_7_log(workspace, iteration, commit["commit_hash"], 0, -(best_rate*100),
+                            1.0, 0, "fail", "crash", current_layer, msg)
+                return {"success": False, "error": msg,
+                        "baseline_rate": baseline_rate, "best_rate": best_rate}
             phase_7_log(workspace, iteration, commit["commit_hash"], 0, -(best_rate*100),
                         1.0, 0, "fail", "discard", current_layer,
                         f"L1 fail: {result_23['description']}")
@@ -273,7 +305,25 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
             log(f"  KEEP — new best: dev {best_rate:.0%}"
                 + (f", holdout {best_holdout:.0%}" if best_holdout is not None else ""))
         else:
-            git_revert_last(skill_path)
+            # Red-team finding #8 (iter 30): same safety check as the
+            # L1-fail branch above — a failed revert means the mutation
+            # is still in the working tree and subsequent iterations
+            # would build on corrupt state. Abort the loop cleanly
+            # instead of pretending the revert succeeded.
+            revert = git_revert_last(skill_path)
+            if not revert.get("success"):
+                msg = (
+                    f"Gate decision={decision} at iter {iteration}; "
+                    f"git revert ALSO failed ({revert.get('output', 'no output')}). "
+                    f"Working tree is in an undefined state. Aborting loop."
+                )
+                log(f"  ABORT: {msg}")
+                phase_7_log(workspace, iteration, commit["commit_hash"],
+                            new_rate * 100, delta * 100,
+                            1.0, new_eval.get("tokens", 0), "fail", "crash",
+                            current_layer, msg)
+                return {"success": False, "error": msg,
+                        "baseline_rate": baseline_rate, "best_rate": best_rate}
             log(f"  {decision.upper()} — reverted")
 
         # Phase 7: Log (with traces for Meta-Harness active diagnosis)

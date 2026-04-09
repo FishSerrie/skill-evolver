@@ -220,17 +220,31 @@ If you find nothing to improve, output:
 
     response = _call_claude(prompt, model=model, timeout=180)
 
-    # Parse the JSON from the last line
+    # Parse the JSON from the last line and VALIDATE shape.
+    # Red-team finding #1 (iter 30): the prior code returned the parsed
+    # dict as-is, so a malformed LLM response like `{"changed": true}`
+    # (missing `description` / `mutation_type`) would crash the
+    # orchestrator's `result_23['description']` access with a KeyError.
+    # Instead, normalize the dict with safe defaults so every caller
+    # sees a well-formed shape even when the LLM output is partial.
     for line in reversed(response.split("\n")):
         line = line.strip()
         if line.startswith("{") and "changed" in line:
             try:
-                return json.loads(line)
+                parsed = json.loads(line)
             except json.JSONDecodeError:
-                pass
+                continue
+            if not isinstance(parsed, dict):
+                continue
+            return {
+                "changed": bool(parsed.get("changed", False)),
+                "description": str(parsed.get("description", "llm did not provide description")),
+                "mutation_type": str(parsed.get("mutation_type", "unknown")),
+                "diagnosis": str(parsed.get("diagnosis", "")),
+            }
 
     return {"changed": False, "description": "could not parse claude response",
-            "mutation_type": "none"}
+            "mutation_type": "none", "diagnosis": ""}
 
 
 # ─────────────────────────────────────────────
@@ -365,25 +379,77 @@ Requirements:
 
     response = _call_llm(prompt, model=model, timeout=180)
 
-    # Parse JSON from response
+    # Parse JSON from response, then VALIDATE shape before writing.
+    # Red-team finding #3 (iter 30): the prior code wrote whatever the
+    # LLM returned directly to evals.json. A malformed response like
+    # `{"evals": [{"id": 1, "prompt": "test"}]}` (missing `assertions`,
+    # no `split`) would pass through, poisoning the baseline eval with
+    # zero-assertion cases that artificially inflate pass_rate to 1.0.
+    data = None
     for line in response.split("\n"):
         line = line.strip()
         if line.startswith("{") and '"evals"' in line:
             try:
                 data = json.loads(line)
-                output_path.write_text(json.dumps(data, indent=2, ensure_ascii=False))
-                return {"count": len(data.get("evals", []))}
+                break
             except json.JSONDecodeError:
                 pass
+    if data is None:
+        json_match = re.search(r'\{[\s\S]*"evals"[\s\S]*\}', response)
+        if json_match:
+            try:
+                data = json.loads(json_match.group())
+            except json.JSONDecodeError:
+                pass
+    if data is None:
+        return None
 
-    # Try to find JSON block in the full response
-    json_match = re.search(r'\{[\s\S]*"evals"[\s\S]*\}', response)
-    if json_match:
-        try:
-            data = json.loads(json_match.group())
-            output_path.write_text(json.dumps(data, indent=2, ensure_ascii=False))
-            return {"count": len(data.get("evals", []))}
-        except json.JSONDecodeError:
-            pass
+    # Schema validation — every case must have a non-empty assertions
+    # list plus prompt + split. Reject the whole batch on any violation
+    # (safer than partial writes; the caller can retry or fall back).
+    valid = _validate_gt_schema(data)
+    if not valid:
+        return None
 
-    return None
+    output_path.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    return {"count": len(data.get("evals", []))}
+
+
+def _validate_gt_schema(data: object) -> bool:
+    """Return True if ``data`` matches the GT schema strictly enough to
+    be safely written to ``evals.json``.
+
+    Checks every case has: int-convertible ``id``, non-empty string
+    ``prompt``, non-empty list ``assertions`` where each assertion has
+    a string ``type``, and a ``split`` string. Extra keys are ignored.
+    Zero-assertion cases are rejected because they inflate ``pass_rate``
+    to 1.0 (the ``if total_t else 0`` guard in LocalEvaluator treats a
+    no-op case as trivially passing).
+    """
+    if not isinstance(data, dict):
+        return False
+    evals = data.get("evals")
+    if not isinstance(evals, list) or not evals:
+        return False
+    valid_splits = {"dev", "holdout", "regression"}
+    for case in evals:
+        if not isinstance(case, dict):
+            return False
+        if "id" not in case:
+            return False
+        prompt = case.get("prompt")
+        if not isinstance(prompt, str) or not prompt.strip():
+            return False
+        assertions = case.get("assertions")
+        if not isinstance(assertions, list) or not assertions:
+            return False
+        for a in assertions:
+            if not isinstance(a, dict):
+                return False
+            atype = a.get("type")
+            if not isinstance(atype, str) or not atype:
+                return False
+        split = case.get("split", "dev")
+        if split not in valid_splits:
+            return False
+    return True
