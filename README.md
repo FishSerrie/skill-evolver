@@ -10,7 +10,7 @@
 [![OpenCode](https://img.shields.io/badge/OpenCode-Skill-purple)](https://opencode.ai)
 [![Codex](https://img.shields.io/badge/Codex-Skill-green?logo=openai&logoColor=white)](https://developers.openai.com/codex)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://python.org)
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://python.org)
 
 **English** · [中文](docs/README_CN.md) · [Architecture](docs/architecture.en.md)
 
@@ -413,15 +413,18 @@ Evolver stores zero skill-specific data in its own directory. Everything lives i
 ```
 my-skill-workspace/
 ├── evals/
-│   └── evals.json              # GT data
+│   ├── evals.json              # GT data (test cases + assertions)
+│   └── checks/                 # GT-referenced script_check helpers
+│       └── check_*.py          # canonical home per eval_strategy.md
 └── evolve/
     ├── evolve_plan.md          # Adaptive eval strategy (auto-generated)
     ├── results.tsv             # Experiment log (1 row per iteration)
     ├── experiments.jsonl       # Fine-grained per-case memory + diagnoses
-    ├── best_versions/          # Snapshots of best skill versions
+    ├── best_versions/          # Snapshots of best skill versions (top 3)
     ├── iteration-E1/
-    │   ├── grading.json        # Evaluation results
-    │   └── traces/             # Full execution traces (Meta-Harness)
+    │   ├── benchmark.json      # Aggregated stats (run_l2_eval.write_benchmark)
+    │   ├── grading.json        # Per-case grades (run_l2_eval.write_grading)
+    │   └── traces/             # Per-case execution traces (Meta-Harness)
     │       ├── case_1.md
     │       └── case_2.md
     └── review.html             # HTML eval viewer (if Creator available)
@@ -449,6 +452,9 @@ stuck_threshold: 5
 # Full evolve loop
 python3 scripts/evolve_loop.py <skill-path> --gt <evals.json> --run [--max-iterations N]
 
+# Preview the first-iteration mutation without committing (safe dry-run)
+python3 scripts/evolve_loop.py <skill-path> --gt <evals.json> --dry-run
+
 # Setup only (no loop)
 python3 scripts/evolve_loop.py <skill-path> --gt <evals.json>
 
@@ -460,30 +466,98 @@ python3 scripts/evolve_loop.py <skill-path> --cleanup
 python3 scripts/evolve_loop.py <skill-path> --cleanup-versions
 ```
 
+### Conversation interface (primary mode — no CLI needed)
+
+The CLI is a fallback for unattended / CI runs. The **primary** user
+interface is natural-language requests inside Claude Code (or Codex,
+OpenCode). The skill's `description` field triggers on phrases like:
+
+| User says                                         | What Claude does                  |
+|---|---|
+| "Optimize this skill" or "optimize my skill at X" | Enter evolve mode on that path    |
+| "帮我优化这个 skill" / "帮我优化 xxx skill"        | Enter evolve mode (Chinese)       |
+| "Use skill-evolver to tune `./foo`"               | Enter evolve mode on that path    |
+| "/skill-evolver evolve ./my-skill" or "/evolve"   | Enter evolve mode explicitly      |
+| "Evaluate this skill, don't change anything"      | Run eval mode only                |
+| "Compare `./v1` and `./v2`"                       | Run benchmark mode                |
+| "Show me what the first iteration would change"   | Run evolve with `--dry-run`       |
+
+Claude then executes the 8-Phase loop **directly in the conversation**
+— reading memory, diagnosing failures with Meta-Harness traces,
+making atomic edits with the Edit tool, committing, gating, logging.
+End users never see a CLI command; Claude handles all the mechanics
+internally. See `plugin/skills/skill-evolver/SKILL.md` **How the user
+invokes it** section for the full pattern list.
+
+### Auto-persisting traces (in-conversation mode)
+
+Meta-Harness diagnosis requires per-case trace files at
+`<workspace>/evolve/iteration-E{N}/traces/case_*.md`. For
+in-conversation callers, `LocalEvaluator.full_eval` accepts an
+optional `traces_dir` kwarg that auto-writes the trace dict so the
+next iteration's Phase 1/2 has evidence to work from without
+calling `persist_traces` separately:
+
+```python
+from evaluators import LocalEvaluator
+from pathlib import Path
+r = LocalEvaluator().full_eval(
+    skill_path,
+    gt_path,
+    split='dev',
+    traces_dir=workspace / 'evolve' / f'iteration-E{N}' / 'traces',
+)
+# case_1.md, case_2.md, ... auto-written to traces_dir
+```
+
 ---
 
 ## Repo Structure
 
 ```
 skill-evolver/
-├── plugin/skills/skill-evolver/    # The actual skill (source of truth)
-│   ├── SKILL.md                    # Main entry point
-│   ├── references/                 # Protocol documents
-│   ├── agents/                     # Agent protocols
-│   └── scripts/                    # Python scripts
-├── examples/hello-skill/           # 5-minute demo
+├── plugin/skills/skill-evolver/       # The actual skill (source of truth)
+│   ├── SKILL.md                       # Main entry point
+│   ├── references/                    # Protocol documents
+│   ├── agents/                        # Agent protocols
+│   └── scripts/                       # 13 single-purpose Python files
+├── examples/hello-skill/              # 5-minute demo
 ├── docs/
-│   ├── architecture.md             # Technical architecture (Chinese)
-│   ├── architecture.en.md          # Technical architecture (English)
-│   └── README_CN.md                # Chinese README
-├── scripts/                        # Build, sync, and install scripts
-│   ├── install.sh                  # Unified installer (--claude/--codex/--opencode/--all)
-│   ├── sync-codex.sh               # Generates .agents/ from plugin/
-│   ├── sync-opencode.sh            # Generates .opencode/ from plugin/
-│   └── sync-all.sh                 # Runs both sync scripts
+│   ├── architecture.md                # Technical architecture (Chinese)
+│   ├── architecture.en.md             # Technical architecture (English)
+│   ├── README_CN.md                   # Chinese README
+│   ├── bootstrap-report.md            # Self-iteration run report (Chinese)
+│   └── comparison-analysis.md         # Design decisions analysis (Chinese)
+├── scripts/                           # Build, sync, and install scripts
+│   ├── install.sh                     # Unified installer (--claude/--codex/--opencode/--all)
+│   ├── sync-codex.sh                  # Generates .agents/ from plugin/
+│   ├── sync-opencode.sh               # Generates .opencode/ from plugin/
+│   └── sync-all.sh                    # Runs both sync scripts
 ├── README.md
-└── LICENSE                         # MIT
+└── LICENSE                            # MIT
 ```
+
+### scripts/ layout (13 single-purpose files, every one ≤ 650 lines)
+
+After the iter-15 through iter-19 refactor, `plugin/skills/skill-evolver/scripts/` is split by concern. Every file owns one thing; `from evolve_loop import X` still works for back-compat via top-level re-exports and PEP 562 `__getattr__`.
+
+| File | Owns |
+|---|---|
+| `evolve_loop.py` | Phase functions 0 / 1 / 4 / 5 / 7 / 8 + git helpers + `persist_traces` / `write_traces_to_dir` + CLI entry (delegates to `orchestrator.main`) |
+| `orchestrator.py` | `run_evolve_loop` (the 8-Phase driver) + `main` (argparse + dispatch) + `_eval_holdout_or_none` |
+| `gate.py` | `phase_6_gate_decision` — pure function, stdlib-only |
+| `llm.py` | `LLM_BACKENDS` registry + `_call_llm` / `_call_llm_http` + `phase_2_3_ideate_and_modify` + `run_l2_eval_via_claude` + `auto_construct_gt` |
+| `cleanup.py` | `_iter_num` + `cleanup_best_versions` + `cleanup_eval_outputs` + `_try_launch_eval_viewer` |
+| `evaluators.py` | `Evaluator` ABC + `BinaryLLMJudge` + `LocalEvaluator` + `get_evaluator` factory (lazy-imports backends) |
+| `evaluator_backends.py` | `CreatorEvaluator` + `ScriptEvaluator` + `PytestEvaluator` (lazy-loaded only when config requests them) |
+| `common.py` | Python version gate + Creator path discovery + `find_workspace` + `parse_skill_md` |
+| `aggregate_results.py` | `parse_results_tsv` + `run_benchmark` A/B + markdown report formatter |
+| `run_l1_gate.py` | L1 quick-gate helper (calls Creator's `quick_validate.py`) |
+| `run_l2_eval.py` | L2 eval library helpers |
+| `setup_workspace.py` | Workspace bootstrap |
+| `__init__.py` | Package marker |
+
+See `plugin/skills/skill-evolver/SKILL.md` **Code Organization** section for the full import-graph and cycle-breaker design (PEP 562 `__getattr__` + lazy factory imports).
 
 ---
 
@@ -491,8 +565,11 @@ skill-evolver/
 
 | Document | Language | Content |
 |---|---|---|
-| [Architecture](docs/architecture.en.md) | English | Full technical design, 4-layer architecture, Creator hard-dependency model |
+| [Architecture](docs/architecture.en.md) | English | Full technical design, 4-layer architecture, Creator hard-dependency model, scripts/ layout |
 | [Architecture](docs/architecture.md) | Chinese | Same content, Chinese version |
+| [README_CN](docs/README_CN.md) | Chinese | Full Chinese README |
+| [Bootstrap Report](docs/bootstrap-report.md) | Chinese | Step-by-step self-iteration run report (how Evolver was used to optimize Evolver) |
+| [Comparison Analysis](docs/comparison-analysis.md) | Chinese | Design decisions vs AutoResearch / Creator / Meta-Harness |
 
 ---
 
@@ -526,6 +603,6 @@ skill-evolver/
 
 - **[skill-creator](https://github.com/anthropics/skills/tree/main/skills/skill-creator)** by Anthropic — the evaluation engine. Hard dependency, called by reference, never copied. Creator updates flow into Evolver automatically.
 - **[AutoResearch](https://github.com/uditgoenka/autoresearch)** — Karpathy-inspired autonomous iteration loop that became Evolver's 8-phase outer loop with real keep/discard/revert (not "edit and forget")
-- **[Meta-Harness](https://arxiv.org/abs/2506.xxxxx)** — execution-trace-based active diagnosis. Every iteration must cite specific trace evidence before proposing a change.
+- **Meta-Harness** — execution-trace-based active diagnosis pattern from Meta's agent-optimization work. Every iteration must cite specific trace evidence from `iteration-E{N}/traces/case_*.md` before proposing a change. Auto-persisted by `LocalEvaluator.full_eval(..., traces_dir=...)`.
 - **ServiceClaw QA V2** — "LLM classifies, program scores" evaluation philosophy
 - Built for the [Claude Code](https://claude.com/claude-code) ecosystem

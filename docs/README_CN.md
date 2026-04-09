@@ -485,6 +485,6 @@ MIT
 
 - **[skill-creator](https://github.com/anthropics/skills/tree/main/skills/skill-creator)** by Anthropic — 评测引擎本身。硬依赖，引用调用，不复制。Creator 更新后 Evolver 自动受益。
 - **[AutoResearch](https://github.com/uditgoenka/autoresearch)** — Karpathy 启发的自主迭代外循环，演化为 Evolver 的 8 阶段 loop（含真实 keep/discard/revert，不是改了就不管）
-- **[Meta-Harness](https://arxiv.org/abs/2506.xxxxx)** — 执行轨迹诊断思想，Evolver 的 active diagnosis 协议要求每次提改动前必须 cite trace 证据
+- **Meta-Harness** — Meta 的 agent-optimization 执行轨迹诊断思想。Evolver 的 active diagnosis 协议要求每次提改动前必须 cite 具体 trace 证据（`iteration-E{N}/traces/case_*.md`）。由 `LocalEvaluator.full_eval(..., traces_dir=...)` 自动落盘。
 - **ServiceClaw QA V2** — "LLM 二元分类 + 程序算分" 评测哲学的灵感来源
 - 为 [Claude Code](https://claude.com/claude-code) 生态系统而建

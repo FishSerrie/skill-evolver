@@ -299,15 +299,27 @@ skill-evolver/                          ← GitHub repo root
 │           │   ├── analyzer_agent.md        ← 归因分析
 │           │   ├── grader_agent.md          ← 指针文件 → Creator 的 grader.md
 │           │   └── comparator_agent.md      ← 指针文件 → Creator 的 comparator.md
-│           └── scripts/
+│           └── scripts/                    ← 13 个单一职责文件，每个 ≤ 650 行
 │               ├── __init__.py
-│               ├── common.py                ← 共享工具 + require_creator()
-│               ├── setup_workspace.py       ← workspace 初始化
+│               ├── common.py                ← Python 3.10+ version gate、Creator 路径发现、
+│               │                                find_workspace、parse_skill_md
+│               ├── setup_workspace.py       ← workspace + evals/checks/ 初始化
 │               ├── run_l1_gate.py           ← L1 快速门卫（调 Creator 的 quick_validate）
-│               ├── run_l2_eval.py           ← L2 评测辅助函数
-│               ├── evaluators.py            ← LocalEvaluator 框架 + BinaryLLMJudge
-│               ├── aggregate_results.py     ← 统计聚合
-│               └── evolve_loop.py           ← 8 阶段编排 + eval viewer 启动
+│               ├── run_l2_eval.py           ← L2 评测库函数
+│               ├── evaluators.py            ← Evaluator ABC + BinaryLLMJudge + LocalEvaluator
+│               │                                + get_evaluator 工厂（lazy-import backends）
+│               ├── evaluator_backends.py    ← CreatorEvaluator + ScriptEvaluator + Pytest
+│               │                                Evaluator（仅在被工厂请求时才加载）
+│               ├── gate.py                  ← phase_6_gate_decision（纯函数、stdlib only）
+│               ├── llm.py                   ← LLM_BACKENDS + _call_llm + phase_2_3_ideate
+│               │                                + run_l2_eval_via_claude + auto_construct_gt
+│               ├── cleanup.py               ← _iter_num + cleanup_* + _try_launch_eval_viewer
+│               ├── aggregate_results.py     ← results.tsv 解析 + A/B benchmark
+│               ├── orchestrator.py          ← run_evolve_loop（8 阶段驱动）+ main（CLI）
+│               │                                + _eval_holdout_or_none
+│               └── evolve_loop.py           ← Phase 函数 0/1/4/5/7/8 + git 辅助
+│                                                + persist_traces / write_traces_to_dir
+│                                                + CLI 入口（delegate 到 orchestrator.main）
 ├── .agents/skills/skill-evolver/       ← Codex 平台变体（自动同步）
 ├── .opencode/skills/skill-evolver/     ← OpenCode 平台变体（自动同步）
 ├── docs/
@@ -317,9 +329,9 @@ skill-evolver/                          ← GitHub repo root
 └── LICENSE
 ```
 
-总计：18 个 skill 文件，~2700 行
+总计：skill body + 13 个 scripts 文件，所有 scripts ≤ 650 行。
 
 ---
 
-*发布版本：v1.0*
-*日期：2026-04-08*
+*发布版本：v1.1 — 28 轮自进化（安全修复、scripts/ 拆分、Python 版本 gate、自然语言触发、traces 自动落盘、Layer-3 新文件支持）*
+*日期：2026-04-09*

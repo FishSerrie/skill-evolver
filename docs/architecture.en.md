@@ -365,15 +365,27 @@ skill-evolver/                          ← GitHub repo root
 │           │   ├── analyzer_agent.md        ← attribution analysis
 │           │   ├── grader_agent.md          ← pointer file → Creator's grader.md
 │           │   └── comparator_agent.md      ← pointer file → Creator's comparator.md
-│           └── scripts/
+│           └── scripts/                    ← 13 single-purpose files, every one ≤ 650 lines
 │               ├── __init__.py
-│               ├── common.py                ← shared utilities + require_creator()
-│               ├── setup_workspace.py       ← workspace initialization
+│               ├── common.py                ← Python 3.10+ version gate, Creator path
+│               │                                discovery, find_workspace, parse_skill_md
+│               ├── setup_workspace.py       ← workspace + evals/checks/ bootstrap
 │               ├── run_l1_gate.py           ← L1 quick gate (calls Creator's quick_validate)
-│               ├── run_l2_eval.py           ← L2 eval helpers
-│               ├── evaluators.py            ← LocalEvaluator framework + BinaryLLMJudge
-│               ├── aggregate_results.py     ← statistical aggregation
-│               └── evolve_loop.py           ← 8-phase orchestration + eval viewer launch
+│               ├── run_l2_eval.py           ← L2 eval library helpers
+│               ├── evaluators.py            ← Evaluator ABC + BinaryLLMJudge + LocalEvaluator
+│               │                                + get_evaluator factory (lazy-imports backends)
+│               ├── evaluator_backends.py    ← CreatorEvaluator + ScriptEvaluator + Pytest
+│               │                                Evaluator (lazy-loaded only when requested)
+│               ├── gate.py                  ← phase_6_gate_decision (pure function)
+│               ├── llm.py                   ← LLM_BACKENDS + _call_llm + phase_2_3_ideate
+│               │                                + run_l2_eval_via_claude + auto_construct_gt
+│               ├── cleanup.py               ← _iter_num + cleanup_* + _try_launch_eval_viewer
+│               ├── aggregate_results.py     ← results.tsv parser + A/B benchmark
+│               ├── orchestrator.py          ← run_evolve_loop (8-phase driver) + main (CLI)
+│               │                                + _eval_holdout_or_none
+│               └── evolve_loop.py           ← Phase functions 0/1/4/5/7/8 + git helpers
+│                                                + persist_traces / write_traces_to_dir
+│                                                + CLI entry delegating to orchestrator.main
 ├── docs/
 │   ├── architecture.md                 ← this document (Chinese)
 │   ├── architecture.en.md              ← this document (English)
@@ -392,5 +404,5 @@ skill-evolver/                          ← GitHub repo root
 
 ---
 
-*Release: v1.0*
-*Date: 2026-04-08*
+*Release: v1.1 — 28-iteration self-evolution round (safety fixes, scripts/ split, Python version gate, natural-language triggers, auto-persist traces, Layer-3 new-file support)*
+*Date: 2026-04-09*
