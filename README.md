@@ -399,10 +399,21 @@ Not tied to any specific creator. Four built-in evaluators:
 
 | Evaluator | Use case | Command |
 |---|---|---|
-| `local` | Built-in assertion matching | `--evaluator local` |
-| `creator` | Enhances with trigger eval | `--evaluator creator` (default) |
+| `local` | Built-in assertion matching — deterministic, no subprocess, no LLM | `--evaluator local` |
+| `creator` | Wraps `local` + additionally calls Creator's `run_eval.py` for trigger F1 (default when no `--evaluator` is passed) | `--evaluator creator` |
 | `script` | Your own eval script | `--evaluator script --evaluator-script ./my_eval.py` |
 | `pytest` | Standard test framework | `--evaluator pytest --evaluator-test-cmd "pytest tests/"` |
+
+**Note on "lazy imports"**: `import evaluators` itself never loads the
+three non-default backends (`evaluator_backends.py` stays absent from
+`sys.modules`). The factory `get_evaluator` lazy-imports the specific
+backend class only when that backend is actually requested. Because
+the factory's built-in default is `creator`, the first call to
+`get_evaluator()` with no `evaluator` key will lazy-load
+`CreatorEvaluator` (which in turn holds a `LocalEvaluator` fallback
+internally). To skip the lazy load entirely, pass `--evaluator local`
+on the CLI or set `evaluator: local` in `evolve_plan.md` — that path
+touches only `LocalEvaluator` and never enters `evaluator_backends.py`.
 
 ---
 
