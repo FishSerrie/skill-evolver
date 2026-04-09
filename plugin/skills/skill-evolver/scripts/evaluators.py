@@ -136,18 +136,41 @@ class BinaryLLMJudge:
     def judge(self, question: str, context: str) -> bool:
         """Ask the LLM a single binary question about the context.
 
+        Backward-compatible thin wrapper around :meth:`judge_with_reasoning`
+        that returns only the boolean verdict. Prefer
+        ``judge_with_reasoning`` for new code — the reasoning string is
+        what makes the eval trace diagnose-able (Meta-Harness paper §3
+        "model outputs" trace component).
+        """
+        verdict, _ = self.judge_with_reasoning(question, context)
+        return verdict
+
+    def judge_with_reasoning(self, question: str,
+                             context: str) -> tuple[bool, str]:
+        """Ask the LLM a binary question and capture both verdict + reasoning.
+
+        The prompt asks the LLM to produce a 1-2 sentence rationale on
+        the first line(s) followed by YES or NO on the last line. The
+        rationale is the "model outputs" trace component from the
+        Meta-Harness paper §3 — capturing it is what lets the proposer
+        diagnose WHY a semantic assertion failed, not just THAT it did.
+
         Args:
             question: A yes/no question (e.g., "Does this text mention X?")
             context: The text to evaluate against.
 
         Returns:
-            True if YES, False if NO or unavailable.
+            ``(verdict, reasoning)`` where verdict is True/False and
+            reasoning is the LLM's rationale (may be empty if the LLM
+            output was malformed or the call crashed).
         """
         prompt = (
-            f"You are a binary classifier. Answer ONLY with YES or NO.\n\n"
+            f"You are a binary classifier. First state your reasoning in "
+            f"1-2 short sentences. Then on the VERY LAST line, output "
+            f"exactly YES or NO — nothing else on that line.\n\n"
             f"Context:\n{context[:8000]}\n\n"
             f"Question: {question}\n\n"
-            f"Answer (YES or NO):"
+            f"Reasoning:"
         )
 
         call_llm = self._get_llm_caller()
@@ -158,14 +181,27 @@ class BinaryLLMJudge:
             self.total_duration += duration
             self.total_tokens += max(len(prompt) // 4, 1)
 
-            output = output.strip().upper()
-            # Parse YES/NO from output — handle variations
-            last_line = output.split("\n")[-1] if output else ""
-            if "YES" in last_line:
-                return True
-            if "NO" in last_line:
-                return False
-            return "YES" in output and "NO" not in output
+            output = (output or "").strip()
+            # Split off the last non-empty line as the verdict.
+            lines = [ln for ln in output.split("\n") if ln.strip()]
+            if not lines:
+                return False, ""
+            last_line = lines[-1].strip().upper()
+            reasoning = "\n".join(lines[:-1]).strip()
+            if not reasoning and len(lines) == 1:
+                # LLM didn't follow the template — single line. Treat
+                # that line as both reasoning and verdict.
+                reasoning = lines[0].strip()
+
+            if "YES" in last_line and "NO" not in last_line:
+                return True, reasoning
+            if "NO" in last_line and "YES" not in last_line:
+                return False, reasoning
+            # Ambiguous last line — fall back to overall content scan.
+            up = output.upper()
+            if "YES" in up and "NO" not in up:
+                return True, reasoning
+            return False, reasoning
 
         except Exception as e:
             # Log the failure instead of silently returning False. A bare
@@ -173,11 +209,10 @@ class BinaryLLMJudge:
             # JSON, timeout, credential error) indistinguishable from a
             # legitimate "NO" answer, which poisoned Phase 2 diagnosis.
             self.total_duration += time.time() - t0
-            print(
-                f"[warn] BinaryLLMJudge.judge failed: {type(e).__name__}: {e}",
-                file=sys.stderr,
-            )
-            return False
+            err = f"{type(e).__name__}: {e}"
+            print(f"[warn] BinaryLLMJudge.judge failed: {err}",
+                  file=sys.stderr)
+            return False, f"[llm_error] {err}"
 
     def judge_batch(self, questions: list[tuple[str, str]]) -> list[bool]:
         """Judge multiple questions sequentially.
@@ -257,6 +292,10 @@ class LocalEvaluator(Evaluator):
         that scores only SKILL.md misses content that legitimately lives
         in references/ and agents/. This mirrors dev/run_loop.py's
         build_corpus() so local eval reflects real Claude behavior.
+
+        Note: the ``### <rel-path> ###`` header format matters — it's
+        what :meth:`_locate` uses to map char offsets back to
+        ``{file, line}`` pointers for the trace enrichment.
         """
         parts = []
         skill_md = skill_path / "SKILL.md"
@@ -270,6 +309,65 @@ class LocalEvaluator(Evaluator):
                 rel = md.relative_to(skill_path)
                 parts.append(f"### {rel} ###\n{md.read_text()}")
         return "\n\n".join(parts)
+
+    def _build_skill_snapshot(self, skill_path: Path) -> dict:
+        """Build the paper §3 "state updates" trace component for a
+        skill evaluation.
+
+        Captures:
+          - path         str  — skill directory
+          - size_bytes   int  — SKILL.md file size
+          - skill_md_lines int — line count of SKILL.md body
+          - description_chars int — length of the ``description`` field
+            from the SKILL.md YAML frontmatter (0 if no frontmatter)
+          - references_loaded [str] — *.md files under references/
+            that the evaluator corpus-loaded (relative paths)
+          - agents_loaded    [str] — *.md files under agents/ ditto
+
+        This snapshot lets a proposer reading a historical case JSON
+        see exactly what Claude's corpus looked like at evaluation
+        time, without having to ``git checkout`` the commit to
+        reconstruct it. Matches paper §2's "state updates" in the
+        skill evaluation regime (which is otherwise mostly stateless).
+        """
+        skill_md = skill_path / "SKILL.md"
+        size_bytes = skill_md.stat().st_size if skill_md.exists() else 0
+        md_lines = 0
+        description_chars = 0
+        if skill_md.exists():
+            md_text = skill_md.read_text()
+            md_lines = md_text.count("\n") + 1
+            # Parse front-matter description (simple — avoids YAML dep).
+            fm_match = re.match(
+                r"^---\s*\n(.*?)\n---\s*\n", md_text, re.DOTALL)
+            if fm_match:
+                frontmatter = fm_match.group(1)
+                # description can be a single line or a multi-line block.
+                desc_match = re.search(
+                    r"^description\s*:\s*(.*?)(?=^\w|\Z)",
+                    frontmatter,
+                    re.MULTILINE | re.DOTALL,
+                )
+                if desc_match:
+                    description_chars = len(desc_match.group(1).strip())
+
+        def _rel_md_list(subdir: str) -> list[str]:
+            dir_path = skill_path / subdir
+            if not dir_path.is_dir():
+                return []
+            return sorted(
+                str(p.relative_to(skill_path))
+                for p in dir_path.rglob("*.md")
+            )
+
+        return {
+            "path": str(skill_path),
+            "size_bytes": size_bytes,
+            "skill_md_lines": md_lines,
+            "description_chars": description_chars,
+            "references_loaded": _rel_md_list("references"),
+            "agents_loaded": _rel_md_list("agents"),
+        }
 
     def full_eval(self, skill_path: Path, gt_path: Path,
                   split: str = "dev",
@@ -295,8 +393,10 @@ class LocalEvaluator(Evaluator):
         """
         t0 = time.time()
         skill_content = self._load_skill_corpus(skill_path)
-        skill_md_path = skill_path / "SKILL.md"
-        skill_md_size = skill_md_path.stat().st_size if skill_md_path.exists() else 0
+        # Rich skill snapshot (paper §3 "state updates" trace component).
+        # Computed once per full_eval since it doesn't change across
+        # cases in the same run.
+        skill_snapshot = self._build_skill_snapshot(skill_path)
         data = json.loads(gt_path.read_text())
 
         raw_cases = data if isinstance(data, list) else data.get("evals", [])
@@ -320,13 +420,16 @@ class LocalEvaluator(Evaluator):
                 val = a.get("value", "")
                 desc = a.get("description", val)
 
-                ok = self._evaluate_assertion(
+                result = self._evaluate_assertion(
                     atype, val, a, skill_content, skill_path)
+                ok = bool(result.get("pass", False))
 
-                # Structured assertion record. Type-specific fields (match
-                # location, stdout/stderr, judge reasoning) will be filled
-                # in progressively by later meta-evolution iterations —
-                # the schema has room for them without breaking grep.
+                # Merge type-specific rich fields (match.location,
+                # nearest_match, stdout/stderr, judge_reasoning, etc.)
+                # into the assertion record so the proposer can diagnose
+                # without re-running the evaluator. This is the paper
+                # §3 alignment — each assertion carries its own trace
+                # components.
                 assertion_record = {
                     "index": idx,
                     "type": atype,
@@ -334,6 +437,10 @@ class LocalEvaluator(Evaluator):
                     "description": desc,
                     "pass": ok,
                 }
+                for k, v in result.items():
+                    if k == "pass":
+                        continue
+                    assertion_record[k] = v
                 case_assertions.append(assertion_record)
 
                 if ok:
@@ -352,10 +459,7 @@ class LocalEvaluator(Evaluator):
                 "case_id": case_id,
                 "split": c.get("split", "dev"),
                 "prompt": case_prompt,
-                "skill_loaded": {
-                    "path": str(skill_path),
-                    "size_bytes": skill_md_size,
-                },
+                "skill_loaded": skill_snapshot,
                 "assertions": case_assertions,
                 "summary": {
                     "total_assertions": case_total,
@@ -386,44 +490,186 @@ class LocalEvaluator(Evaluator):
             "cases": cases,
         }
 
+    # ─────────────────────────────────────────
+    # Trace-enrichment helpers (Meta-Harness §3 four components:
+    # prompts, tool calls, model outputs, state updates)
+    # ─────────────────────────────────────────
+
+    def _locate(self, content: str, char_idx: int) -> dict:
+        """Map a char offset in the concatenated corpus back to a
+        ``{file, line}`` pointer, using the ``### <path> ###`` headers
+        inserted by ``_load_skill_corpus``. Returns a dict with at
+        least ``line`` (int, 1-indexed) and optionally ``file`` (str
+        relative path inside the skill). Used by contains/regex match
+        enrichment so the proposer can Read the exact line.
+        """
+        if char_idx < 0 or char_idx > len(content):
+            return {"line": -1}
+        prefix = content[:char_idx]
+        # Find the most recent header above char_idx.
+        header_re = re.compile(r"### (.+?) ###", re.MULTILINE)
+        last_header = None
+        last_header_end = 0
+        for m in header_re.finditer(prefix):
+            last_header = m.group(1)
+            last_header_end = m.end()
+        # Line number within the file (1-indexed from the end of the header).
+        section = content[last_header_end:char_idx]
+        line_in_section = section.count("\n") + 1
+        if last_header is None:
+            # No header found — just an overall line offset (shouldn't
+            # happen for SKILL.md since _load_skill_corpus prefixes it).
+            return {"line": prefix.count("\n") + 1}
+        return {"file": last_header, "line": line_in_section}
+
+    def _excerpt(self, content: str, start: int, end: int,
+                 margin: int = 40) -> str:
+        """Return a clean ±margin-char window around a char range,
+        collapsing newlines and stripping leading/trailing whitespace."""
+        a = max(0, start - margin)
+        b = min(len(content), end + margin)
+        snippet = content[a:b].replace("\n", " ").strip()
+        return re.sub(r"\s+", " ", snippet)
+
+    def _nearest_match(self, content: str, needle: str) -> dict | None:
+        """Find the longest prefix/suffix of ``needle`` that appears
+        verbatim in ``content``. Returns None if fewer than half the
+        needle's characters match anywhere.
+
+        This is a diagnostic shortcut for ``contains`` failures — the
+        most common failure mode is "close but not exact" (whitespace,
+        punctuation, minor wording change), and the longest shared
+        prefix reliably pinpoints the intended location. More formal
+        edit-distance matching would need a library; the prefix/suffix
+        approach is deterministic, library-free, and good enough for
+        skill GT workloads.
+        """
+        if not needle:
+            return None
+        lower_content = content.lower()
+        lower_needle = needle.lower()
+
+        min_len = max(len(needle) // 2, 3)
+        # Try progressively shorter prefixes.
+        for length in range(len(needle) - 1, min_len - 1, -1):
+            probe = lower_needle[:length]
+            idx = lower_content.find(probe)
+            if idx >= 0:
+                return {
+                    "matched_text": content[idx:idx + length],
+                    "missing_suffix": needle[length:],
+                    "match_ratio": round(length / len(needle), 2),
+                    **self._locate(content, idx),
+                    "excerpt": self._excerpt(content, idx, idx + length),
+                }
+        # Try progressively shorter suffixes.
+        for length in range(len(needle) - 1, min_len - 1, -1):
+            probe = lower_needle[-length:]
+            idx = lower_content.find(probe)
+            if idx >= 0:
+                return {
+                    "matched_text": content[idx:idx + length],
+                    "missing_prefix": needle[:-length],
+                    "match_ratio": round(length / len(needle), 2),
+                    **self._locate(content, idx),
+                    "excerpt": self._excerpt(content, idx, idx + length),
+                }
+        return None
+
+    # ─────────────────────────────────────────
+
     def _evaluate_assertion(self, atype: str, val: str, assertion: dict,
-                            content: str, skill_path: Path) -> bool:
-        """Evaluate a single assertion. Deterministic types use program logic;
-        semantic types use BinaryLLMJudge for YES/NO classification."""
+                            content: str, skill_path: Path) -> dict:
+        """Evaluate a single assertion and return a structured result dict.
+
+        The returned dict always has a ``pass`` boolean. Type-specific
+        extras populate the Meta-Harness paper §3 trace components
+        (prompts / tool calls / model outputs / state updates) so the
+        proposer can diagnose WHY each assertion failed, not just THAT
+        it did.
+
+        Extras by type:
+          - contains / regex  pass  → ``match: {file, line, excerpt}``
+          - contains          fail  → ``nearest_match: {...} | None``
+          - not_contains      fail  → ``found_at: {file, line, excerpt}``
+          - script_check      both  → ``exit_code, stdout, stderr, duration_ms, resolved_path``
+          - path_hit          both  → ``judge_reasoning: str``
+          - fact_coverage     preset→ ``judge_verdicts: [{fact, verdict, reasoning}, ...], passed_facts, total_facts``
+          - fact_coverage     online→ ``keyword_hits, keyword_total``
+        """
 
         # --- Program-only assertions (deterministic) ---
 
         if atype == "contains":
-            return val.lower() in content.lower()
+            needle_lower = val.lower()
+            content_lower = content.lower()
+            idx = content_lower.find(needle_lower)
+            if idx >= 0:
+                return {
+                    "pass": True,
+                    "match": {
+                        **self._locate(content, idx),
+                        "excerpt": self._excerpt(content, idx, idx + len(val)),
+                    },
+                }
+            return {"pass": False, "nearest_match": self._nearest_match(content, val)}
 
         if atype == "not_contains":
-            return val.lower() not in content.lower()
+            idx = content.lower().find(val.lower())
+            if idx < 0:
+                return {"pass": True}
+            return {
+                "pass": False,
+                "found_at": {
+                    **self._locate(content, idx),
+                    "excerpt": self._excerpt(content, idx, idx + len(val)),
+                },
+            }
 
         if atype == "regex":
-            return bool(re.search(val, content))
+            try:
+                m = re.search(val, content)
+            except re.error as e:
+                return {"pass": False, "regex_error": str(e)}
+            if m:
+                return {
+                    "pass": True,
+                    "match": {
+                        **self._locate(content, m.start()),
+                        "text": m.group(0)[:200],
+                        "excerpt": self._excerpt(content, m.start(), m.end()),
+                    },
+                }
+            return {"pass": False, "nearest_match": None}
 
         if atype == "file_exists":
-            return (skill_path / val).exists() if val else False
+            ok = bool(val) and (skill_path / val).exists()
+            out = {"pass": ok}
+            if not ok and val:
+                out["expected_path"] = str(skill_path / val)
+            return out
 
         if atype == "json_schema":
-            return self._check_json_schema(val, content)
+            return {"pass": self._check_json_schema(val, content)}
 
         if atype == "script_check":
-            return self._check_script(val, content, skill_path)
+            return self._check_script_rich(val, content, skill_path)
 
         # --- LLM binary assertions (semantic, YES/NO only) ---
 
         if atype == "path_hit":
             judge = self._get_judge()
-            return judge.judge(
+            verdict, reasoning = judge.judge_with_reasoning(
                 f"Does this text reference or mention the path '{val}'?",
-                content)
+                content,
+            )
+            return {"pass": verdict, "judge_reasoning": reasoning}
 
         if atype == "fact_coverage":
-            return self._check_fact_coverage(val, assertion, content)
+            return self._check_fact_coverage_rich(val, assertion, content)
 
-        # Unknown assertion type — fail explicitly (don't silently pass)
-        return False
+        # Unknown assertion type — fail explicitly (don't silently pass).
+        return {"pass": False, "error": f"unknown assertion type: {atype}"}
 
     def _check_json_schema(self, schema_str: str, content: str) -> bool:
         """Validate content against a JSON schema (program-only)."""
@@ -441,33 +687,37 @@ class LocalEvaluator(Evaluator):
         except (json.JSONDecodeError, KeyError, TypeError):
             return False
 
-    def _check_script(self, script_path: str, content: str,
-                      skill_path: Path) -> bool:
-        """Run an external script and use its exit code as pass/fail.
+    def _check_script_rich(self, script_path: str, content: str,
+                           skill_path: Path) -> dict:
+        """Run an external script and return a rich result dict.
 
-        Script path resolution order:
+        The result dict is the Meta-Harness paper §3 "tool calls" trace
+        component for script_check — captures stdout, stderr, exit
+        code, and wall-clock duration so the proposer can diagnose
+        script failures WITHOUT re-running them.
+
+        Script path resolution order (unchanged from the old
+        ``_check_script``):
           1. Absolute path → used as-is.
-          2. Workspace-relative → ``<skill-parent>/<skill-name>-workspace/<script_path>``
-             for standalone skills, or ``<repo-root-parent>/<skill-name>-workspace/<script_path>``
-             for plugin-hosted skills (mirrors ``find_workspace``).
-             **Preferred location**: eval-harness check scripts belong in the
-             workspace (a gitignored, per-user artifact), not inside the
-             shipped skill body.
-          3. Skill-relative → ``skill_path/<script_path>`` (legacy fallback
-             for older GT files that still point inside the skill).
+          2. Workspace-relative → ``<workspace>/<script_path>``
+             (the canonical home per ``eval_strategy.md``).
+          3. Skill-relative → ``skill_path/<script_path>`` (legacy
+             fallback for older GT files pointing inside the skill).
 
-        The script runs with ``cwd=skill_path``, so ``Path.cwd()`` inside the
-        script resolves to the skill root regardless of where the script
-        file physically lives.
+        The script runs with ``cwd=skill_path`` so ``Path.cwd()``
+        inside the script resolves to the skill root regardless of
+        where the script file physically lives.
+
+        Output caps: stdout/stderr are truncated at 2000 chars each so
+        a runaway script can't balloon the case JSON file.
         """
         from common import find_workspace  # local import to avoid cycles
 
         p = Path(script_path)
+        resolved: Path | None
         if p.is_absolute():
-            resolved: Path | None = p if p.exists() else None
+            resolved = p if p.exists() else None
         else:
-            # Resolve skill_path first — Path('.').name == '' would otherwise
-            # produce a bogus workspace path.
             skill_root = skill_path.resolve()
             workspace = find_workspace(skill_root)
             workspace_candidate = workspace / script_path
@@ -480,48 +730,109 @@ class LocalEvaluator(Evaluator):
                 resolved = None
 
         if resolved is None:
-            return False
+            return {
+                "pass": False,
+                "exit_code": -1,
+                "stdout": "",
+                "stderr": f"[script not found] {script_path}",
+                "duration_ms": 0,
+                "resolved_path": None,
+            }
 
+        t0 = time.time()
         try:
             result = subprocess.run(
                 [sys.executable, str(resolved)],
                 input=content, capture_output=True, text=True,
                 timeout=30, cwd=str(skill_path),
             )
-            return result.returncode == 0
-        except (subprocess.TimeoutExpired, OSError):
-            return False
+            duration_ms = int((time.time() - t0) * 1000)
+            return {
+                "pass": result.returncode == 0,
+                "exit_code": result.returncode,
+                "stdout": (result.stdout or "")[:2000],
+                "stderr": (result.stderr or "")[:2000],
+                "duration_ms": duration_ms,
+                "resolved_path": str(resolved),
+            }
+        except subprocess.TimeoutExpired:
+            return {
+                "pass": False,
+                "exit_code": -1,
+                "stdout": "",
+                "stderr": "[timeout] script exceeded 30s",
+                "duration_ms": int((time.time() - t0) * 1000),
+                "resolved_path": str(resolved),
+            }
+        except OSError as e:
+            return {
+                "pass": False,
+                "exit_code": -1,
+                "stdout": "",
+                "stderr": f"[os error] {e}",
+                "duration_ms": int((time.time() - t0) * 1000),
+                "resolved_path": str(resolved),
+            }
 
-    def _check_fact_coverage(self, val: str, assertion: dict,
-                             content: str) -> bool:
-        """Check fact coverage using binary LLM judgment per fact point.
+    def _check_fact_coverage_rich(self, val: str, assertion: dict,
+                                  content: str) -> dict:
+        """Check fact coverage and return a rich per-fact breakdown.
 
-        Two modes:
-          Preset: assertion has 'facts' array → LLM binary per fact
-          Online: no 'facts' → keyword matching against val
+        Two modes (both return structured verdicts so the proposer can
+        see which specific facts were missing, not just "below
+        threshold"):
+
+          Preset: assertion has a 'facts' array → each fact is judged
+            by ``BinaryLLMJudge.judge_with_reasoning`` and every
+            verdict + rationale is recorded. Passes if ≥80% of facts
+            are covered.
+
+          Online: no preset facts → each comma-separated keyword in
+            ``val`` is checked via substring match. Passes if ≥80% of
+            keywords hit.
+
+        The per-fact dict lines up with the Meta-Harness paper §3
+        "model outputs" trace component — individual LLM verdicts
+        become part of the structured case record.
         """
         facts = assertion.get("facts")
 
         if facts and isinstance(facts, list):
-            # Preset mode: LLM binary judgment per fact
             judge = self._get_judge()
+            verdicts = []
             covered = 0
             for fact in facts:
-                if judge.judge(
+                verdict, reasoning = judge.judge_with_reasoning(
                     f"Does this text cover or address the following fact: '{fact}'?",
-                    content
-                ):
+                    content,
+                )
+                if verdict:
                     covered += 1
-            # Pass if ≥80% of facts are covered
-            return (covered / len(facts)) >= 0.8 if facts else True
-        else:
-            # Online mode (no preset facts): keyword matching
-            # Split val into keywords and check coverage
-            keywords = [k.strip() for k in val.split(",") if k.strip()]
-            if not keywords:
-                return True
-            hits = sum(1 for k in keywords if k.lower() in content.lower())
-            return (hits / len(keywords)) >= 0.8
+                verdicts.append({
+                    "fact": fact,
+                    "verdict": verdict,
+                    "reasoning": reasoning,
+                })
+            total = len(facts)
+            return {
+                "pass": (covered / total) >= 0.8 if total else True,
+                "judge_verdicts": verdicts,
+                "passed_facts": covered,
+                "total_facts": total,
+                "mode": "preset",
+            }
+
+        # Online mode (no preset facts): keyword matching.
+        keywords = [k.strip() for k in val.split(",") if k.strip()]
+        if not keywords:
+            return {"pass": True, "mode": "online", "keyword_total": 0}
+        hits = [k for k in keywords if k.lower() in content.lower()]
+        return {
+            "pass": (len(hits) / len(keywords)) >= 0.8,
+            "keyword_hits": hits,
+            "keyword_total": len(keywords),
+            "mode": "online",
+        }
 
 
 def _basic_schema_check(data: Any, schema: dict) -> bool:
