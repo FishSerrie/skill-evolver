@@ -375,25 +375,26 @@ Memory is stored in the target skill's workspace under the `evolve/` subdirector
 
 ## Code Organization
 
-`scripts/` is split across 13 single-purpose files, every one ≤ 610 lines.
+`scripts/` is split across 13 single-purpose files. Post Meta-Harness alignment (2026-04-09) three files grew past the original ≤ 610-line soft ceiling because the trace enrichment added substantive new functionality (per-assertion rich helpers, structured per-case output, dynamic suggested greps). Every line still earns its keep — slimming is a meta-evolution candidate for a later pass, not a cosmetic fix to block on now.
+
 `from evolve_loop import X` still works for all the symbols listed
 below via top-level re-exports and PEP 562 module `__getattr__`, so
 external callers don't need to know where a symbol physically lives.
 
 | File | Owns | Lines |
 |---|---|---:|
-| `scripts/evolve_loop.py` | Phase functions 0/1/4/5/7/8 + `git_revert_last` + `save_best_version` + `persist_cases` + `write_cases_to_dir` + `write_meta_json` + `_list_untracked` + PEP 562 `__getattr__` re-export of orchestrator symbols + `python scripts/evolve_loop.py` CLI entry (delegates to `orchestrator.main`) | 763 |
-| `scripts/orchestrator.py` | `run_evolve_loop` (the 8-Phase driver) + `main` (argparse + subcommand dispatch) + `_eval_holdout_or_none` + empty-dev-GT guard + revert-fail abort | 544 |
-| `scripts/gate.py` | `phase_6_gate_decision` (pure function, stdlib only) | 134 |
-| `scripts/llm.py` | `LLM_BACKENDS` registry + `_call_llm` / `_call_llm_http` / `_call_claude` + `phase_2_3_ideate_and_modify` (with safe-default JSON shape normalization) + `run_l2_eval_via_claude` + `_local_eval` + `auto_construct_gt` + `_validate_gt_schema` | 455 |
-| `scripts/cleanup.py` | `_iter_num` (shared numeric-sort helper) + `cleanup_best_versions` + `cleanup_eval_outputs` + `_try_launch_eval_viewer` | 153 |
-| `scripts/evaluators.py` | `Evaluator` ABC + `BinaryLLMJudge` + `LocalEvaluator` + `_basic_schema_check` + `get_evaluator` factory (lazy-imports backends) + `parse_evaluator_from_plan` + `EVALUATOR_NAMES` | 608 |
-| `scripts/evaluator_backends.py` | `CreatorEvaluator` + `ScriptEvaluator` + `PytestEvaluator` (lazy-loaded by factory) | 321 |
+| `scripts/evaluators.py` | `Evaluator` ABC + `BinaryLLMJudge` (with `judge_with_reasoning` for LLM rationale capture) + `LocalEvaluator` (rich `_evaluate_assertion` returning paper §3 trace components + `_locate` / `_nearest_match` / `_build_skill_snapshot` / `_check_script_rich` / `_check_fact_coverage_rich` / `_check_json_schema_rich` helpers) + `_basic_schema_check` (bool) + `_basic_schema_check_with_path` (failure-path) + `get_evaluator` factory (lazy-imports backends) + `parse_evaluator_from_plan` + `EVALUATOR_NAMES` | 1053 |
+| `scripts/evolve_loop.py` | Phase functions 0/1/4/5/7/8 + `git_revert_last` + `save_best_version` + `persist_cases` + `write_cases_to_dir` + `write_meta_json` + `_list_untracked` + dynamic `suggested_greps` tailored to failing assertion types + PEP 562 `__getattr__` re-export of orchestrator symbols + `python scripts/evolve_loop.py` CLI entry (delegates to `orchestrator.main`) | 822 |
+| `scripts/llm.py` | `LLM_BACKENDS` registry + `_call_llm` / `_call_llm_http` / `_call_claude` + `phase_2_3_ideate_and_modify` (with full per-case JSON schema section in prompt + safe-default shape normalization) + `run_l2_eval_via_claude` + `_local_eval` + `auto_construct_gt` + `_validate_gt_schema` | 549 |
+| `scripts/orchestrator.py` | `run_evolve_loop` (the 8-Phase driver) + `main` (argparse + subcommand dispatch) + `_eval_holdout_or_none` + empty-dev-GT guard + revert-fail abort | 548 |
 | `scripts/common.py` | Python 3.10+ version gate + Creator path discovery + `find_workspace` + `parse_skill_md` + `validate_frontmatter` + `require_creator` / `CreatorNotFoundError` | 428 |
 | `scripts/aggregate_results.py` | `parse_results_tsv` + `calculate_summary` + `format_markdown` + `run_benchmark` A/B + `format_benchmark_markdown` | 389 |
+| `scripts/evaluator_backends.py` | `CreatorEvaluator` + `ScriptEvaluator` + `PytestEvaluator` (lazy-loaded by factory; forwards `cases_dir` kwarg to LocalEvaluator.full_eval) | 321 |
 | `scripts/run_l1_gate.py` | L1 quick-gate CLI helper + `run_l1_gate` library function | 193 |
-| `scripts/run_l2_eval.py` | L2 eval library helpers: `load_gt` + `aggregate_grades` + `write_benchmark` + `write_grading` | 155 |
 | `scripts/setup_workspace.py` | `setup_workspace` library + CLI entry — creates workspace/evals/checks/ layout + evolve_plan.md template | 172 |
+| `scripts/cleanup.py` | `_iter_num` (shared numeric-sort helper) + `cleanup_best_versions` + `cleanup_eval_outputs` + `_try_launch_eval_viewer` (reads latest meta.json) | 159 |
+| `scripts/run_l2_eval.py` | L2 eval library helpers: `load_gt` + `aggregate_grades` + `calculate_stats` (write_benchmark / write_grading removed in the Meta-Harness refactor — now handled by evolve_loop.write_meta_json + persist_cases) | 139 |
+| `scripts/gate.py` | `phase_6_gate_decision` (pure function, stdlib only) | 134 |
 | `scripts/__init__.py` | (empty marker file) | 1 |
 
 **Import graph** (DAG, no cycles):
