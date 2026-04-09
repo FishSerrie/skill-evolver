@@ -85,7 +85,7 @@ See `references/creator_integration.md` Section 3 for the full path discovery or
 | **Benchmark** | `/skill-evolver benchmark` | Systematic comparison (A/B, blind review) | Yes: calls Creator's comparator/analyzer |
 | **Evolve** | `/skill-evolver evolve` | Automated iterative optimization (core) | Partial: evaluation via Creator; search/gating/memory are Evolver's own |
 
-Pipeline is a run mode: `/skill-evolver pipeline --mode create+eval+evolve`
+To run multiple modes in sequence (e.g. create then eval then evolve), invoke them one after another — each mode is idempotent and reuses the same workspace, so chaining them is a conversational concern, not a separate CLI command.
 
 ---
 
@@ -105,7 +105,9 @@ some-project/
 │   └── scripts/
 └── my-skill-workspace/             ← shared workspace (Creator + Evolver)
     ├── evals/                      ← Creator's evaluation data
-    │   └── evals.json
+    │   ├── evals.json
+    │   └── checks/                 ← GT-referenced script_check helpers
+    │       └── check_*.py          ← (belongs here, NOT under evolve/)
     ├── iteration-1/                ← Creator's eval iterations (pre-existing)
     ├── iteration-2/
     └── evolve/                     ← Evolver-specific subdirectory
@@ -114,9 +116,9 @@ some-project/
         ├── experiments.jsonl       ← fine-grained memory
         ├── best_versions/          ← best skill snapshots
         ├── iteration-E1/           ← Evolve eval artifacts (E-prefix distinguishes from Creator)
-        │   ├── grading.json
-        │   ├── benchmark.json
-        │   └── timing.json
+        │   ├── benchmark.json      ← aggregated stats (run_l2_eval.write_benchmark)
+        │   ├── grading.json        ← per-case grades (run_l2_eval.write_grading)
+        │   └── traces/             ← per-case execution traces (Meta-Harness diagnosis)
         └── summary.md              ← final report
 ```
 

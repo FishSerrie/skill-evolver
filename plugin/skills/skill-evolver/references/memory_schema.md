@@ -14,12 +14,12 @@
 │   │   ├── iteration-5/
 │   │   └── ...
 │   ├── iteration-E1/           # Per-iteration evaluation artifacts
-│   │   ├── benchmark.json
-│   │   ├── grades/
+│   │   ├── benchmark.json      # aggregated stats (run_l2_eval.write_benchmark)
+│   │   ├── grading.json        # per-case grade dump (run_l2_eval.write_grading)
 │   │   └── traces/             # Execution traces (see below)
 │   ├── iteration-E2/
 │   │   ├── benchmark.json
-│   │   ├── grades/
+│   │   ├── grading.json
 │   │   └── traces/
 │   └── ...
 └── ...
@@ -30,7 +30,7 @@
 Each `iteration-E{N}/traces/` directory stores raw execution traces for that iteration's evaluation. Traces are the primary diagnostic input for Phase 1 (Review) and Phase 2 (Ideate).
 
 Contents:
-- One trace file per evaluated case (e.g., `case-003.trace.md`)
+- One trace file per evaluated case (e.g., `iteration-E{N}/traces/case_3.md`)
 - Each trace captures: the prompt sent, the full LLM output, assertion results, and any error/crash output
 - Traces for failed cases are the most important -- they are the evidence base for counterfactual diagnosis
 
@@ -123,7 +123,7 @@ On each keep, snapshot the current skill:
 cp -r <skill-dir> <workspace>/evolve/best_versions/iteration-<N>/
 ```
 
-Retain the 5 most recent best versions; auto-clean older snapshots.
+Retain the 3 most recent best versions; auto-clean older snapshots (matches `cleanup_best_versions(keep_n=3)` in `scripts/cleanup.py`, also re-exported from `scripts/evolve_loop.py` for back-compat).
 
 ---
 

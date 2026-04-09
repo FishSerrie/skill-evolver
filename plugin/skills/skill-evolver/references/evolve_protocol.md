@@ -202,7 +202,7 @@ Read `references/gate_rules.md` for complete gate logic.
 ```
 IF crash or timeout → REVERT
 IF L1 fail → DISCARD
-IF L2 pass_rate > baseline.pass_rate + min_delta
+IF dev_pass_rate > baseline.dev_pass_rate + min_delta
    AND trigger not degraded
    AND tokens <= baseline × 1.2
    AND duration <= baseline × 1.2

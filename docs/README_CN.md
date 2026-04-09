@@ -1,4 +1,4 @@
-[English](../README.md) | [中文](README_CN.md) | [技术架构](architecture.md)
+[English](../README.md) · **中文** · [技术架构](architecture.md)
 
 # Skill Evolver
 

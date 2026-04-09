@@ -1,3 +1,7 @@
+[English](../README.md) · [中文](README_CN.md) · **Architecture** · [技术架构 (CN)](architecture.md)
+
+---
+
 # Skill Evolver — Technical Architecture
 
 > Release version: 1.0
@@ -332,15 +336,8 @@ See `plugin/skills/skill-evolver/references/memory_schema.md`.
 |---|---|---|
 | best_versions/ | Keep latest 3 **snapshots** | `evolve_loop.py --cleanup-versions` |
 | iteration-EN/ | Keep latest 5 + all "keep" rounds | `evolve_loop.py --cleanup` |
-| git history | Squash into one summary commit | `cleanup_git_history()` |
 
-### Git Bloat Prevention
-
-After evolve completes, `cleanup_git_history()` runs:
-```bash
-# Auto-squash all experiment + revert commits
-# "evolve: 65% -> 78%, 6 keeps in 20 iterations"
-```
+Git history is not auto-cleaned — `git revert` already preserves the full trail of failed experiments, and manual squash is an optional follow-up (see the "Git Cleanup Recommendations" section in `references/evolve_protocol.md`).
 
 ---
 
@@ -349,11 +346,10 @@ After evolve completes, `cleanup_git_history()` runs:
 ```
 skill-evolver/                          ← GitHub repo root
 ├── .claude-plugin/
-│   ├── marketplace.json                ← marketplace listing (source → ./plugin)
-│   └── plugin.json                     ← root manifest
+│   └── marketplace.json                ← marketplace catalog (source → ./plugin)
 ├── plugin/                             ← subset loaded by Claude Code
 │   ├── .claude-plugin/
-│   │   └── plugin.json                 ← plugin manifest
+│   │   └── plugin.json                 ← plugin manifest (per Claude Code plugin format spec)
 │   └── skills/
 │       └── skill-evolver/
 │           ├── SKILL.md                ← main entry + quick start

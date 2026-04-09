@@ -27,10 +27,15 @@ def setup_workspace(skill_path: Path, workspace: Path | None = None) -> dict:
     ws = (workspace or find_workspace(skill_path)).resolve()
     evolve_dir = ws / "evolve"
 
-    # Create directories
+    # Create directories. evals/checks/ is the canonical home for
+    # GT-referenced script_check helper scripts — creating it here
+    # instantiates the convention documented in eval_strategy.md so
+    # fresh workspaces don't force users to mkdir it the first time
+    # they write a script_check assertion.
     dirs_to_create = [
         ws,
         ws / "evals",
+        ws / "evals" / "checks",
         evolve_dir,
         evolve_dir / "best_versions",
     ]
@@ -129,10 +134,11 @@ model:
 - max_token_increase: 0.20
 - regression_tolerance: 0.05
 
-## Termination Conditions
-- max_iterations: 20
-- stuck_threshold: 5 consecutive discards
-- exhaustion: all 3 layers attempted with no improvement
+## Loop Control
+- max_iterations: 20 (hard terminate)
+- exhaustion: all 3 layers attempted with no improvement (terminate)
+- stuck_switch: 5 consecutive discards → switch to radical strategy (NOT terminate;
+  phase_8_loop_control keeps running with a different ideation path)
 
 ---
 *This is a template. Claude should analyze the skill and GT data to fill in TODOs before starting evolve.*

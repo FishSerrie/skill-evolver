@@ -9,7 +9,8 @@
 ## Gate Decision Pseudocode
 
 This pseudocode mirrors the live implementation in
-`scripts/evolve_loop.py::phase_6_gate_decision`. Both holdout consistency
+`scripts/gate.py::phase_6_gate_decision` (also re-exported from
+`scripts/evolve_loop.py` for back-compat). Both holdout consistency
 and the dev-saturation branch are real code paths, not aspirational.
 
 ```python

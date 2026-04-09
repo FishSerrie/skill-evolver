@@ -58,6 +58,26 @@
         {"type": "regex", "value": "(?i)line\\s*(number|N|\\d)", "description": "References line numbers in output format"}
       ],
       "split": "holdout"
+    },
+    {
+      "id": 7,
+      "prompt": "[regression guard] output format spec must survive evolution",
+      "assertions": [
+        {"type": "contains", "value": "Output Format", "description": "Output Format section header must persist"},
+        {"type": "regex", "value": "\\*\\*\\[.+\\]\\*\\*", "description": "**[Category]** template must persist in SKILL.md"}
+      ],
+      "split": "regression",
+      "metadata": {"note": "Guards against the evolve loop accidentally removing the output format section while making other fixes"}
+    },
+    {
+      "id": 8,
+      "prompt": "[regression guard] anti-hallucination rule must persist",
+      "assertions": [
+        {"type": "contains", "value": "Rules", "description": "Rules section heading must survive"},
+        {"type": "contains", "value": "do not invent", "description": "'do not invent issues' anti-hallucination rule must persist"}
+      ],
+      "split": "regression",
+      "metadata": {"note": "Guards against losing the 'do not invent issues' rule during body rewrites"}
     }
   ]
 }

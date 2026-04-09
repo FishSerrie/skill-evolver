@@ -60,11 +60,14 @@ How to install:
   3. Already installed at a custom path?
      export SKILL_CREATOR_PATH=/your/path/to/skill-creator
 
-Searched:
+Searched (in order):
   - $SKILL_CREATOR_PATH ({env_val})
+  - ~/.claude/plugins/marketplaces/*/plugins/skill-creator/skills/skill-creator/
   - ~/.claude/plugins/marketplaces/*/plugins/skill-creator/
+  - ~/.claude/plugins/skill-creator/skills/skill-creator/
+  - ~/.claude/plugins/skill-creator/plugin/skills/skill-creator/
   - ~/.claude/skills/skill-creator/
-  - .claude/skills/skill-creator/
+  - ./.claude/skills/skill-creator/
 """.strip()
     raise CreatorNotFoundError(msg)
 
@@ -282,15 +285,6 @@ def find_creator_path(verbose: bool = False) -> Path | None:
     return None
 
 
-def get_evolver_root() -> Path:
-    """Get the root directory of skill-evolver's own installation.
-
-    Useful for finding our own agents/, references/, scripts/ dirs.
-    """
-    # This file lives at: <evolver-root>/scripts/common.py
-    return Path(__file__).parent.parent
-
-
 def find_workspace(skill_path: Path) -> Path:
     """Find or determine workspace path for a skill.
 
@@ -326,11 +320,6 @@ def find_workspace(skill_path: Path) -> Path:
         return repo_root.parent / f"{name}-workspace"
     # Standalone: workspace is immediate sibling of the skill dir
     return skill_path.parent / f"{name}-workspace"
-
-
-def find_evolve_dir(skill_path: Path) -> Path:
-    """Find the evolve/ subdirectory within the workspace."""
-    return find_workspace(skill_path) / "evolve"
 
 
 def parse_skill_md(skill_path: Path) -> tuple[str, str, str]:

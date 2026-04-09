@@ -8,7 +8,7 @@
 | **Eval** | Spawn subagent, run eval, human review viewer | Three-tier eval (quick gate / dev / strict), finer granularity | **Enhances** |
 | **Improve** | Human reads feedback → manual edits → re-run eval | Improve mode = human-directed improvement | **Calls Creator** |
 | **Benchmark** | Blind A/B comparison + analyzer | Benchmark mode + comparator agent | **Calls Creator** |
-| **Evolve** | None. Human loops manually | **Core value**. AutoResearch-style automatic loop | **New** |
+| **Evolve** | None. Human loops manually | **Core value**. AutoResearch-style automated outer loop | **New** |
 | **Gate** | None. Human decides if satisfied | Multi-gate AND logic (quality / trigger / cost / latency / regression) | **New** |
 | **Memory** | Only workspace directory | results.tsv + experiments.jsonl + git + best_versions + traces | **New** |
 | **Description optimization** | `run_loop.py` for trigger optimization | Layer 1 description optimization calls Creator's run_loop directly | **Calls Creator** |
