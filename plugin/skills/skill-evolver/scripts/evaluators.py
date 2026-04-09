@@ -247,7 +247,23 @@ class LocalEvaluator(Evaluator):
         return "\n\n".join(parts)
 
     def full_eval(self, skill_path: Path, gt_path: Path,
-                  split: str = "dev") -> dict:
+                  split: str = "dev",
+                  traces_dir: Path | None = None) -> dict:
+        """Run full eval against GT assertions.
+
+        Args:
+            skill_path: the skill to evaluate.
+            gt_path: the GT evals.json file.
+            split: which GT split to run (``dev`` / ``holdout`` / ``regression``).
+            traces_dir: optional directory to auto-persist per-case trace
+                files (``case_<id>.md`` under this dir). When set, the
+                returned ``traces`` dict is ALSO written to disk so
+                in-conversation callers don't have to remember to call
+                ``persist_traces`` separately — essential for the next
+                iteration's Phase 1 / Phase 2 Meta-Harness diagnosis,
+                which reads these files. The conventional path is
+                ``<workspace>/evolve/iteration-E{N}/traces``.
+        """
         t0 = time.time()
         skill_content = self._load_skill_corpus(skill_path)
         data = json.loads(gt_path.read_text())
@@ -287,6 +303,13 @@ class LocalEvaluator(Evaluator):
                     })
 
             traces[str(case_id)] = "\n".join(case_trace_lines)
+
+        # Auto-persist traces when an explicit directory is requested.
+        # Lazy-import the helper to avoid a top-level cycle with
+        # evolve_loop (which already imports from this module).
+        if traces_dir is not None and traces:
+            from evolve_loop import write_traces_to_dir
+            write_traces_to_dir(Path(traces_dir), traces)
 
         duration = time.time() - t0
         judge = self._llm_judge

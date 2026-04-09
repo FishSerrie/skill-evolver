@@ -358,15 +358,40 @@ def phase_5_l1_gate(skill_path: Path, gt_path: Path | None = None) -> dict:
 # Phase 7: Log (fully automated)
 # ─────────────────────────────────────────────
 
+def write_traces_to_dir(traces_dir: Path,
+                        traces: dict | None) -> Path | None:
+    """Write per-case execution traces to an explicit target directory.
+
+    Low-level primitive. Does not know about workspace/iteration
+    conventions — just takes a target directory and a trace dict and
+    writes one ``case_{case_id}.md`` per entry. Creates the directory
+    if it doesn't exist. Returns the directory on success, or None if
+    ``traces`` is empty.
+
+    This is the shared helper used by both ``persist_traces`` (below,
+    which layers on the workspace/iteration naming convention) and
+    ``LocalEvaluator.full_eval`` (which takes an explicit ``traces_dir``
+    kwarg for in-conversation callers who want Meta-Harness files
+    written without going through the full phase_7_log pipeline).
+    """
+    if not traces:
+        return None
+    traces_dir = Path(traces_dir)
+    traces_dir.mkdir(parents=True, exist_ok=True)
+    for case_id, trace_content in traces.items():
+        trace_file = traces_dir / f"case_{case_id}.md"
+        trace_file.write_text(str(trace_content))
+    return traces_dir
+
+
 def persist_traces(workspace: Path, iteration: int,
                    traces: dict | None) -> Path | None:
     """Write per-case execution traces to ``iteration-E{N}/traces/``.
 
-    This is the canonical Meta-Harness trace-writing path used by both
-    ``phase_7_log`` (CLI ``--run`` mode) and by in-conversation Claude
-    executors (who should call this directly after ``LocalEvaluator.
-    full_eval`` to persist ``result['traces']`` for the next iteration's
-    Phase 1/2 diagnosis).
+    Convention-path wrapper around :func:`write_traces_to_dir`. Used by
+    ``phase_7_log`` (CLI ``--run`` mode); in-conversation callers can
+    call this directly after ``LocalEvaluator.full_eval`` to persist
+    ``result['traces']`` for the next iteration's Phase 1/2 diagnosis.
 
     Args:
         workspace: the skill's workspace directory.
@@ -380,12 +405,10 @@ def persist_traces(workspace: Path, iteration: int,
     """
     if not traces:
         return None
-    trace_dir = workspace / "evolve" / f"iteration-E{iteration}" / "traces"
-    trace_dir.mkdir(parents=True, exist_ok=True)
-    for case_id, trace_content in traces.items():
-        trace_file = trace_dir / f"case_{case_id}.md"
-        trace_file.write_text(str(trace_content))
-    return trace_dir
+    return write_traces_to_dir(
+        workspace / "evolve" / f"iteration-E{iteration}" / "traces",
+        traces,
+    )
 
 
 def phase_7_log(workspace: Path, iteration: int, commit: str,
