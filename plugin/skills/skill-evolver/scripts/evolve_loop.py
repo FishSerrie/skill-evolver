@@ -226,6 +226,11 @@ def phase_1_review(workspace: Path, skill_path: Path) -> dict:
     last_meta_json = None
     cases_dir = None
     failed_case_paths: list[str] = []
+    # Track which assertion types actually failed in the most recent
+    # iteration so we can tailor suggested_greps to the specific
+    # failure modes the proposer needs to diagnose (instead of a
+    # one-size-fits-all hardcoded list).
+    failed_assertion_types: set[str] = set()
     if rows:
         for row in reversed(rows):
             iter_num = row.get("iteration", 0)
@@ -238,11 +243,11 @@ def phase_1_review(workspace: Path, skill_path: Path) -> dict:
                 candidate_cases = candidate_dir / "cases"
                 if candidate_cases.is_dir():
                     cases_dir = str(candidate_cases.relative_to(workspace))
-                    # List failing case files by reading each case JSON's
-                    # summary.failed > 0. This is the only "content read"
-                    # Phase 1 does, and it only touches summary.failed
-                    # (one int per file), not the full trace. Keeps
-                    # return size small.
+                    # Read each case JSON's summary + failing-assertion
+                    # types. This is a small targeted read (only the
+                    # summary block and assertion.type fields) — not a
+                    # full trace ingestion — so Phase 1 output stays
+                    # O(kilobytes) even with dozens of iterations.
                     case_files = sorted(
                         candidate_cases.glob("case_*.json"),
                         key=lambda p: _iter_num(p.stem),
@@ -250,21 +255,75 @@ def phase_1_review(workspace: Path, skill_path: Path) -> dict:
                     for cf in case_files:
                         try:
                             data = json.loads(cf.read_text())
-                            if data.get("summary", {}).get("failed", 0) > 0:
-                                failed_case_paths.append(
-                                    str(cf.relative_to(workspace)))
                         except (json.JSONDecodeError, OSError):
                             continue
+                        summary_block = data.get("summary") or {}
+                        if summary_block.get("failed", 0) > 0:
+                            failed_case_paths.append(
+                                str(cf.relative_to(workspace)))
+                            # Which assertion TYPES failed? Used to
+                            # tailor suggested_greps below.
+                            for idx in summary_block.get("failed_indexes", []):
+                                try:
+                                    atype = data["assertions"][idx].get("type")
+                                    if atype:
+                                        failed_assertion_types.add(atype)
+                                except (IndexError, KeyError, TypeError):
+                                    continue
                 break  # only the most recent iteration with meta.json
 
-    suggested_greps = [
-        f"grep -l '\"pass\": false' {cases_dir}/*.json"
-        if cases_dir else None,
-        "grep -A3 '\"type\": \"script_check\"' "
-        "evolve/iteration-E*/cases/*.json",
-        "grep -B1 '\"failed_indexes\"' evolve/iteration-E*/cases/*.json",
-    ]
-    suggested_greps = [g for g in suggested_greps if g]
+    # Build suggested_greps dynamically based on what actually failed.
+    # Each pattern targets a specific type's rich fields so the
+    # proposer has the right starting query for each class of
+    # failure — much better than a generic "find all pass:false" list.
+    suggested_greps: list[str] = []
+    if cases_dir:
+        suggested_greps.append(
+            f"grep -l '\"pass\": false' {cases_dir}/*.json")
+    else:
+        # No cases dir yet (pre-baseline) — nothing else to suggest.
+        pass
+
+    if "contains" in failed_assertion_types:
+        # nearest_match tells us if the needle was close-but-wrong
+        # (match_ratio ~0.9) vs entirely absent (null).
+        suggested_greps.append(
+            "grep -A6 '\"nearest_match\"' "
+            "evolve/iteration-E*/cases/*.json")
+
+    if "not_contains" in failed_assertion_types:
+        # found_at tells us WHERE the forbidden string lives.
+        suggested_greps.append(
+            "grep -A4 '\"found_at\"' "
+            "evolve/iteration-E*/cases/*.json")
+
+    if "script_check" in failed_assertion_types:
+        # stdout/stderr capture is the whole reason the rich
+        # tool-call trace exists — surface it directly.
+        suggested_greps.append(
+            "grep -A2 '\"stderr\"' "
+            "evolve/iteration-E*/cases/*.json")
+
+    if "path_hit" in failed_assertion_types:
+        suggested_greps.append(
+            "grep -A2 '\"judge_reasoning\"' "
+            "evolve/iteration-E*/cases/*.json")
+
+    if "fact_coverage" in failed_assertion_types:
+        # judge_verdicts array — look at the individual fact-level
+        # verdicts (some are usually true, the failing ones are the
+        # diagnostic target).
+        suggested_greps.append(
+            "grep -A6 '\"judge_verdicts\"' "
+            "evolve/iteration-E*/cases/*.json")
+
+    if "regex" in failed_assertion_types or not failed_assertion_types:
+        # Regex failures often give null nearest_match, so recommend
+        # reading the failing case file directly. Also applies as a
+        # generic fallback when we have no failure-type signal yet.
+        suggested_greps.append(
+            "grep -B1 '\"failed_indexes\":' "
+            "evolve/iteration-E*/cases/*.json")
 
     # Collect past diagnoses (counterfactual insights from prior iterations)
     past_diagnoses = [
