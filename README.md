@@ -536,9 +536,9 @@ skill-evolver/
 ├── docs/
 │   ├── architecture.md                # Technical architecture (Chinese)
 │   ├── architecture.en.md             # Technical architecture (English)
-│   ├── README_CN.md                   # Chinese README
-│   ├── bootstrap-report.md            # Self-iteration run report (Chinese)
-│   └── comparison-analysis.md         # Design decisions analysis (Chinese)
+│   └── README_CN.md                   # Chinese README
+│   # Note: docs/private/ exists locally (self-iteration reports, presentation
+│   #       drafts, WeChat article drafts) but is gitignored and not shipped.
 ├── scripts/                           # Build, sync, and install scripts
 │   ├── install.sh                     # Unified installer (--claude/--codex/--opencode/--all)
 │   ├── sync-codex.sh                  # Generates .agents/ from plugin/
@@ -579,8 +579,10 @@ See `plugin/skills/skill-evolver/SKILL.md` **Code Organization** section for the
 | [Architecture](docs/architecture.en.md) | English | Full technical design, 4-layer architecture, Creator hard-dependency model, scripts/ layout |
 | [Architecture](docs/architecture.md) | Chinese | Same content, Chinese version |
 | [README_CN](docs/README_CN.md) | Chinese | Full Chinese README |
-| [Bootstrap Report](docs/bootstrap-report.md) | Chinese | Step-by-step self-iteration run report (how Evolver was used to optimize Evolver) |
-| [Comparison Analysis](docs/comparison-analysis.md) | Chinese | Design decisions vs AutoResearch / Creator / Meta-Harness |
+
+> **Private notes**: self-iteration reports, design-decision comparison, presentation drafts,
+> and WeChat article drafts live in `docs/private/` locally. They are `.gitignore`-excluded and
+> not published to GitHub — available on request for collaborators.
 
 ---
 

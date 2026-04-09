@@ -17,6 +17,8 @@ evolve-workspace
 .agents/
 .opencode/
 
-# Private docs — local only, not published to GitHub
-docs/bootstrap-report.md
-docs/comparison-analysis.md
+# Private docs — local only, not published to GitHub.
+# Lives in docs/private/, contains: presentation母本、公众号文章草稿、
+# self-iteration reports、design comparison notes、以及其它只给作者本人
+# 或线下汇报/路演/文章用的材料。Public docs stay in docs/ at the top level.
+docs/private/
