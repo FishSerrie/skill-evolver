@@ -351,8 +351,12 @@ def main():
     ws = args.workspace or find_workspace(args.skill_path)
 
     if args.info:
-        evaluators_info = {k: v.__name__ for k, v in
-                          __import__("evaluators").EVALUATOR_REGISTRY.items()}
+        # Evaluator registry was removed in iter 19 in favor of lazy
+        # imports. Enumerate the known backend names here instead of
+        # poking into evaluators.py internals.
+        from evaluators import EVALUATOR_NAMES
+        evaluators_info = {name: name.capitalize() + "Evaluator"
+                           for name in EVALUATOR_NAMES}
         print(json.dumps({
             "phases": {
                 "phase_0": "Setup (auto)", "phase_1": "Review (auto)",

@@ -475,288 +475,21 @@ def _basic_schema_check(data: Any, schema: dict) -> bool:
 
 
 # ─────────────────────────────────────────────
-# Built-in: Creator Evaluator (skill-creator)
+# Pluggable backends (CreatorEvaluator / ScriptEvaluator / PytestEvaluator)
+# moved to scripts/evaluator_backends.py in iter 19. They are lazy-imported
+# by get_evaluator() below to avoid a circular import (backends inherit
+# from Evaluator + LocalEvaluator in this module).
 # ─────────────────────────────────────────────
-
-class CreatorEvaluator(Evaluator):
-    """Evaluator using binary LLM judgment + program scoring.
-
-    For each test case and each assertion:
-      - Deterministic assertions (contains, regex, etc.) → program-only
-      - Semantic assertions (path_hit, fact_coverage) → binary LLM call
-    Program aggregates all binary results into final scores.
-
-    Falls back to LocalEvaluator if claude CLI unavailable.
-    """
-
-    name = "creator"
-
-    def __init__(self, model: str | None = None):
-        self.model = model
-        self.creator_path = find_creator_path()
-        self._fallback = LocalEvaluator(model=model)
-
-    def quick_gate(self, skill_path: Path, gt_path: Path | None = None) -> dict:
-        return self._fallback.quick_gate(skill_path, gt_path)
-
-    def full_eval(self, skill_path: Path, gt_path: Path,
-                  split: str = "dev") -> dict:
-        # CreatorEvaluator uses the same binary approach as LocalEvaluator
-        # but can additionally invoke Creator's scripts for trigger testing
-        result = self._fallback.full_eval(skill_path, gt_path, split)
-
-        # Try to enhance with Creator's trigger evaluation if available
-        if self.creator_path:
-            trigger_result = self._run_creator_trigger_eval(
-                skill_path, gt_path, split)
-            if trigger_result is not None:
-                result["trigger_f1"] = trigger_result.get("f1", 1.0)
-                result["tokens"] += trigger_result.get("tokens", 0)
-
-        return result
-
-    def _run_creator_trigger_eval(self, skill_path: Path, gt_path: Path,
-                                  split: str) -> dict | None:
-        """Run Creator's trigger evaluation script if available."""
-        if not self.creator_path:
-            return None
-
-        run_eval = self.creator_path / "scripts" / "run_eval.py"
-        if not run_eval.exists():
-            return None
-
-        try:
-            cmd = [
-                sys.executable, str(run_eval),
-                "--eval-set", str(gt_path),
-                "--skill-path", str(skill_path),
-            ]
-            if self.model:
-                cmd.extend(["--model", self.model])
-
-            t0 = time.time()
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=120,
-            )
-            duration = time.time() - t0
-
-            if result.returncode == 0:
-                # Parse trigger results from stdout
-                for line in reversed(result.stdout.strip().split("\n")):
-                    if line.strip().startswith("{"):
-                        try:
-                            return json.loads(line.strip())
-                        except json.JSONDecodeError:
-                            pass
-        except (subprocess.TimeoutExpired, OSError):
-            pass
-
-        return None
-
-    def info(self) -> dict:
-        return {
-            "name": self.name,
-            "type": "CreatorEvaluator",
-            "creator_path": str(self.creator_path) if self.creator_path else None,
-            "model": self.model,
-            "philosophy": "LLM binary classification + program scoring",
-        }
-
-
-# ─────────────────────────────────────────────
-# Built-in: Script Evaluator (user-provided)
-# ─────────────────────────────────────────────
-
-class ScriptEvaluator(Evaluator):
-    """Evaluator that runs a user-provided script.
-
-    The script receives:
-        argv[1] = skill_path
-        argv[2] = gt_path
-        argv[3] = split (optional)
-
-    And must output JSON to stdout matching the Evaluator Protocol format:
-        {"pass_rate": 0.85, "total_passed": 17, "total_assertions": 20, "failed": [...]}
-
-    Configure in evolve_plan.md:
-        evaluator: script
-        evaluator_script: ./my_eval.py
-    """
-
-    name = "script"
-
-    def __init__(self, script_path: str | Path, timeout: int = 300):
-        self.script_path = Path(script_path).resolve()
-        self.timeout = timeout
-        self._fallback = LocalEvaluator()
-
-        if not self.script_path.exists():
-            raise FileNotFoundError(
-                f"Evaluator script not found: {self.script_path}")
-
-    def quick_gate(self, skill_path: Path, gt_path: Path | None = None) -> dict:
-        return self._fallback.quick_gate(skill_path, gt_path)
-
-    def full_eval(self, skill_path: Path, gt_path: Path,
-                  split: str = "dev") -> dict:
-        cmd = [sys.executable, str(self.script_path),
-               str(skill_path), str(gt_path), split]
-
-        t0 = time.time()
-        try:
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=self.timeout,
-            )
-            duration = time.time() - t0
-
-            if result.returncode != 0:
-                return {
-                    "pass_rate": 0.0,
-                    "total_passed": 0,
-                    "total_assertions": 0,
-                    "failed": [{"case_id": "script",
-                                "assertion": f"Script failed: {result.stderr[:200]}"}],
-                    "tokens": 0,
-                    "duration": round(duration, 2),
-                    "traces": {"script_stderr": result.stderr[:2000]},
-                }
-
-            # Parse JSON from stdout (last JSON line)
-            for line in reversed(result.stdout.strip().split("\n")):
-                line = line.strip()
-                if line.startswith("{") and "pass_rate" in line:
-                    try:
-                        parsed = json.loads(line)
-                        parsed.setdefault("tokens", 0)
-                        parsed.setdefault("duration", round(duration, 2))
-                        parsed.setdefault("total_passed", 0)
-                        parsed.setdefault("total_assertions", 0)
-                        parsed.setdefault("failed", [])
-                        parsed.setdefault("traces", {})
-                        return parsed
-                    except json.JSONDecodeError:
-                        pass
-
-            return {
-                "pass_rate": 0.0,
-                "total_passed": 0,
-                "total_assertions": 0,
-                "failed": [{"case_id": "script",
-                            "assertion": "Script did not output valid JSON"}],
-                "tokens": 0,
-                "duration": round(duration, 2),
-                "traces": {"script_stdout": result.stdout[:2000]},
-            }
-
-        except subprocess.TimeoutExpired:
-            return {
-                "pass_rate": 0.0,
-                "total_passed": 0,
-                "total_assertions": 0,
-                "failed": [{"case_id": "script",
-                            "assertion": f"Script timed out ({self.timeout}s)"}],
-                "tokens": 0,
-                "duration": float(self.timeout),
-                "traces": {},
-            }
-
-    def info(self) -> dict:
-        return {
-            "name": self.name,
-            "type": "ScriptEvaluator",
-            "script_path": str(self.script_path),
-            "timeout": self.timeout,
-        }
-
-
-# ─────────────────────────────────────────────
-# Built-in: Pytest Evaluator
-# ─────────────────────────────────────────────
-
-class PytestEvaluator(Evaluator):
-    """Evaluator that runs pytest/jest and counts pass/fail.
-
-    Configure in evolve_plan.md:
-        evaluator: pytest
-        evaluator_test_cmd: pytest tests/ -v --tb=short
-    """
-
-    name = "pytest"
-
-    def __init__(self, test_cmd: str = "pytest tests/ -v --tb=short",
-                 timeout: int = 300):
-        self.test_cmd = test_cmd
-        self.timeout = timeout
-        self._fallback = LocalEvaluator()
-
-    def quick_gate(self, skill_path: Path, gt_path: Path | None = None) -> dict:
-        return self._fallback.quick_gate(skill_path, gt_path)
-
-    def full_eval(self, skill_path: Path, gt_path: Path,
-                  split: str = "dev") -> dict:
-        t0 = time.time()
-        try:
-            result = subprocess.run(
-                self.test_cmd.split(),
-                capture_output=True, text=True, timeout=self.timeout,
-                cwd=str(skill_path.parent),
-            )
-            duration = time.time() - t0
-            output = result.stdout + result.stderr
-
-            passed = failed_count = 0
-            match = re.search(r"(\d+) passed", output)
-            if match:
-                passed = int(match.group(1))
-            match = re.search(r"(\d+) failed", output)
-            if match:
-                failed_count = int(match.group(1))
-
-            total = passed + failed_count
-            if total == 0:
-                total = 1
-
-            return {
-                "pass_rate": passed / total,
-                "total_passed": passed,
-                "total_assertions": total,
-                "failed": ([{"case_id": "pytest",
-                             "assertion": f"{failed_count} tests failed"}]
-                           if failed_count else []),
-                "tokens": 0,
-                "duration": round(duration, 2),
-                "traces": {"pytest_output": output[:4000]},
-            }
-
-        except (subprocess.TimeoutExpired, OSError) as e:
-            return {
-                "pass_rate": 0.0,
-                "total_passed": 0,
-                "total_assertions": 0,
-                "failed": [{"case_id": "pytest", "assertion": str(e)}],
-                "tokens": 0,
-                "duration": time.time() - t0,
-                "traces": {},
-            }
-
-    def info(self) -> dict:
-        return {
-            "name": self.name,
-            "type": "PytestEvaluator",
-            "test_cmd": self.test_cmd,
-        }
 
 
 # ─────────────────────────────────────────────
 # Factory: get_evaluator()
 # ─────────────────────────────────────────────
 
-EVALUATOR_REGISTRY: dict[str, type[Evaluator]] = {
-    "local": LocalEvaluator,
-    "creator": CreatorEvaluator,
-    "script": ScriptEvaluator,
-    "pytest": PytestEvaluator,
-}
+# Evaluator registry — lazy strings resolved inside get_evaluator() so
+# importing evaluators.py doesn't pull in evaluator_backends.py unless
+# one of the non-default backends is actually requested.
+EVALUATOR_NAMES: tuple[str, ...] = ("local", "creator", "script", "pytest")
 
 
 def get_evaluator(config: dict[str, Any] | None = None) -> Evaluator:
@@ -768,33 +501,44 @@ def get_evaluator(config: dict[str, Any] | None = None) -> Evaluator:
         evaluator_test_cmd: str — test command (for PytestEvaluator)
         model: str              — LLM model (for binary judge)
         evaluator_timeout: int  — timeout in seconds
+
+    The three non-default backends live in ``scripts/evaluator_backends.py``
+    and are lazy-imported here so evaluators.py has no load-time dependency
+    on them.
     """
     config = config or {}
     name = config.get("evaluator", "creator")
 
+    if name == "local":
+        return LocalEvaluator(model=config.get("model"))
+
+    # All other backends live in evaluator_backends.py (lazy import
+    # breaks the circular dependency — backends inherit from Evaluator
+    # + LocalEvaluator in this module).
     if name == "creator":
+        from evaluator_backends import CreatorEvaluator
         return CreatorEvaluator(model=config.get("model"))
     elif name == "script":
         script = config.get("evaluator_script")
         if not script:
             raise ValueError(
                 "ScriptEvaluator requires 'evaluator_script' in config")
+        from evaluator_backends import ScriptEvaluator
         return ScriptEvaluator(
             script_path=script,
             timeout=config.get("evaluator_timeout", 300),
         )
     elif name == "pytest":
+        from evaluator_backends import PytestEvaluator
         return PytestEvaluator(
             test_cmd=config.get("evaluator_test_cmd",
                                 "pytest tests/ -v --tb=short"),
             timeout=config.get("evaluator_timeout", 300),
         )
-    elif name == "local":
-        return LocalEvaluator(model=config.get("model"))
     else:
         raise ValueError(
             f"Unknown evaluator '{name}'. "
-            f"Available: {', '.join(EVALUATOR_REGISTRY.keys())}"
+            f"Available: {', '.join(EVALUATOR_NAMES)}"
         )
 
 
