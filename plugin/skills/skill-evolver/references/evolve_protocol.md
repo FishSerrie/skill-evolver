@@ -136,22 +136,29 @@ git add .
 git commit -m "chore: init git for evolve tracking"
 ```
 
-**Step 3: Git not installed -- prompt installation**
-- Prompt the user to install, wait, do not auto-degrade:
+**Step 3: Git not installed -- refuse with install instructions (terminal)**
+
+Git is a **hard requirement** for the evolve loop. `phase_4_commit`
+commits experiments, `git_revert_last` rolls back discarded iterations,
+and `phase_1_review` reads the git log for Phase 2 diagnosis context.
+Every keep/discard decision is grounded in git state. There is no
+folder-based fallback — the loop cannot run without git.
+
+When `phase_0_setup` detects that the `git` binary is missing (the
+``git status`` subprocess raises ``FileNotFoundError``), it raises
+``RuntimeError`` with the actionable per-platform install instructions
+below:
+
 ```
-[WARN] Git not detected. Please install and retry:
+Phase 0: git is not installed. Install git and retry:
   macOS:  brew install git  or  xcode-select --install
   Ubuntu: sudo apt-get install git
   CentOS: sudo yum install git
   Windows: https://git-scm.com/download/win
 ```
 
-**Step 4: Git cannot be installed (no network / restricted environment) -- degrade**
-- Enable folder-based backup only after confirming git is unavailable:
-  1. Back up pre-modification files to `<workspace>/evolve/best_versions/pre-iteration-N/`
-  2. Record key line changes in experiments.jsonl
-  3. When gate decision is discard, manually restore from backup
-- **Tag results.tsv rows with `[no-git]` to remind the user to re-run with git later**
+Installing git on any modern platform takes under a minute. After
+install, re-run evolve and Step 1 or Step 2 will take over.
 
 
 
