@@ -19,38 +19,44 @@
 ---
 
 ```
-          ┌─────────────┐
-          │  Your Skill  │
-          └──────┬───────┘
-                 │
-    ┌────────────▼────────────┐
-    │     Skill Evolver       │
-    │                         │
-    │  Search → Modify →      │
-    │  Evaluate → Gate →      │
-    │  Keep/Discard → Repeat  │
-    └────────────┬────────────┘
-                 │
-          ┌──────▼───────┐
-          │  Better Skill │
-          └──────────────┘
+            ┌──────────────────┐
+            │    Your Skill    │
+            └────────┬─────────┘
+                     │
+                     ▼
+    ┌──────────────────────────────────┐
+    │          Skill Evolver           │
+    │                                  │
+    │    search → modify → evaluate    │
+    │      → gate → keep/discard       │
+    │             → repeat             │
+    └────────────────┬─────────────────┘
+                     │
+                     ▼
+            ┌──────────────────┐
+            │  A Better Skill  │
+            └──────────────────┘
 ```
 
 ---
 
-## Design Philosophy — Three Pillars
+## Why Skill Evolver?
 
-Skill Evolver fuses three state-of-the-art ideas. Each is a hard requirement, not an option:
+**Skills** are the next standard abstraction across Claude Code, Codex CLI, and OpenCode — but **skill iteration is still entirely manual today**. Hand-edit, hand-test, repeat. Not reproducible, not scalable, not auditable.
 
-| Pillar | Source | What it provides | How Evolver uses it |
-|---|---|---|---|
-| **Creator** (core capability) | [skill-creator](https://github.com/anthropics/skills/tree/main/skills/skill-creator) — official Anthropic skill | Evaluation, grading, comparison protocols; HTML eval viewer; quick validation | **Hard dependency.** `require_creator()` resolves Creator at startup or errors out. Grading reads Creator's `agents/grader.md` at runtime — no copies kept in Evolver. Creator updates take effect automatically. |
-| **AutoResearch** (loop methodology) | [AutoResearch](https://github.com/uditgoenka/autoresearch) — Karpathy's autonomous iteration pattern | The 8-phase outer loop: search → modify → verify → gate → keep/discard → repeat | Drives Evolver's `evolve_loop.py`. Each iteration is an atomic experiment with multi-gate AND decision and git-based rollback. Real keep/discard/revert — not "edit and forget". |
-| **Meta-Harness** (diagnosis) | Meta's Trace pattern for LLM agent optimization | Store full execution traces per case; cite trace evidence before proposing any fix; counterfactual diagnosis | Every evaluation writes per-case traces to `iteration-E{N}/traces/`. Phase 1 reads them, Phase 2 enforces a mandatory active diagnosis protocol — the search agent must cite specific trace evidence before any mutation. |
+Three public SOTA projects each solve part of this, but nobody has fused them specifically for skill optimization:
 
-**Core evaluation principle:** LLM only makes atomic YES/NO judgments. Programs compute all scores. Same classification always produces the same score — zero scoring drift.
+| Pillar | Source | What it gives Evolver |
+|---|---|---|
+| **Evaluation engine** | [skill-creator](https://github.com/anthropics/skills/tree/main/skills/skill-creator) (official Anthropic skill) | Grading, comparison, HTML viewer, test-case design, full eval protocol. **Hard dependency, called by reference** — Creator updates auto-propagate |
+| **Autonomous outer loop** | [Karpathy autoresearch](https://github.com/karpathy/autoresearch) → [uditgoenka/autoresearch](https://github.com/uditgoenka/autoresearch) (skill-ified) | The `modify → verify → keep/discard → repeat` 8-phase loop and its 5 principles: one metric / constrained scope / fast verification / automatic rollback / git as memory. **Karpathy originally built it for autonomous optimization of nanochat LLM training code** (700 experiments in 2 days); uditgoenka generalized it into a Claude Code skill |
+| **Failure diagnosis philosophy** (inspired by Meta-Harness) | [Stanford Meta-Harness](https://arxiv.org/pdf/2603.28052) (Lee et al. 2026) | Paper quote: *"access to raw execution traces is the key ingredient for enabling harness search."* Table 3 ablation: Scores Only **34.6** → Scores+Summary **34.9** → Full traces **50.0**. **What we borrow**: don't hand the proposer just scores — expose the raw evaluation record (per-case prompt + skill output + per-assertion PASS/FAIL) so diagnosis is grounded in "seeing the scene", not guessing from numbers |
 
-**No silent degradation:** Evolver does not contain "fallback copies" of Creator's grader/comparator. The pointer files in `agents/` redirect to Creator's full versions at runtime. If Creator updates its protocol, Evolver picks up the change on the next run.
+### What Skill Evolver adds on top
+
+1. **5-way AND gate** — quality / trigger F1 / cost / latency / regression must *all* pass to keep. Any fail triggers a real `git revert`
+2. **Workspace git isolation** — experiment commits land in an independent git, zero pollution of the project git
+3. **Meta-evolution self-proof** — used on itself for 22 rounds (v1: 88.9% → 100%; v2: 71/71 all-green, 0 crashes), every round surfacing a bug the author couldn't see
 
 ---
 
@@ -239,11 +245,13 @@ Set `LLM_BACKEND=codex` (or `opencode`, `http`) to override auto-detection.
 
 ## Five Modes
 
-### Evolve (Core)
+> **Evolve is the reason this tool exists. The other four modes all exist to serve it.**
+
+### ⭐ Evolve (the core)
 ```bash
 /skill-evolver evolve ./my-skill/
 ```
-Autonomous optimization loop. Runs 8 phases per iteration until convergence or max iterations. No human intervention needed.
+**Autonomous optimization loop, unattended.** Runs the 8-phase loop until convergence or `max_iterations`. `keep / discard / revert` decisions are actually executed — not just logged. This is the whole point of Skill Evolver; every other mode below exists as scaffolding for this one.
 
 ### Eval
 ```bash
@@ -419,15 +427,20 @@ touches only `LocalEvaluator` and never enters `evaluator_backends.py`.
 
 ## Workspace Structure
 
-Evolver stores zero skill-specific data in its own directory. Everything lives in the target skill's workspace:
+Evolver stores zero skill-specific data in its own directory. Everything lives alongside the target skill — at the **same level**, not nested inside:
 
 ```
-my-skill-workspace/
+your-skill/                     # Your skill (git-managed)
+├── SKILL.md
+├── references/
+└── scripts/
+
+your-skill-workspace/           # Sibling directory, shared by Creator + Evolver
 ├── evals/
 │   ├── evals.json              # GT data (test cases + assertions)
 │   └── checks/                 # GT-referenced script_check helpers
 │       └── check_*.py          # canonical home per eval_strategy.md
-└── evolve/
+└── evolve/                     # Evolver-specific subdirectory
     ├── evolve_plan.md          # Adaptive eval strategy (auto-generated)
     ├── results.tsv             # Experiment log (1 row per iteration)
     ├── experiments.jsonl       # Fine-grained per-case memory + diagnoses
