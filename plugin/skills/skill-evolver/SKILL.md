@@ -231,147 +231,69 @@ Evolver **does not hardcode evaluation strategy**. Before optimization begins, i
 
 ## Mode Details
 
+Each mode is triggered by the natural-language patterns in the
+description field and the "How the user invokes it" table above.
+Detailed protocols live in `references/`.
+
 ### Create Mode
 
-Invokes Creator's creation workflow + additionally generates GT and a workspace.
-
-**Workflow:**
-1. Read skill-creator's SKILL.md; follow its "Capture Intent -> Interview -> Write SKILL.md" flow
-2. Generate the initial skill
-3. **Additional steps (Evolver-specific):**
-   - Create the evolve workspace
-   - Generate an initial GT data template (trigger + behavior)
-   - Generate evolve_plan.md
-4. Output: complete skill + workspace + recommended next step (eval or evolve)
+Invokes Creator's "Capture Intent → Interview → Write SKILL.md" workflow,
+then additionally bootstraps the evolve workspace, a GT template, and
+an initial `evolve_plan.md`. Output: ready-to-iterate skill + workspace.
 
 ### Eval Mode
 
-Run a single standalone evaluation against a skill, producing a quality report. Does not automatically enter the optimization loop.
-
-**Usage:**
-```
-/skill-evolver eval <skill-path> [--gt <gt-data-path>]
-```
-
-**Workflow:**
-1. Check if workspace exists; create it if not
-2. If an evaluation plan exists, read the strategy; otherwise use defaults (run all dev cases)
-3. Execute evaluation per the strategy:
-   - **Trigger evaluation**: call skill-creator's `scripts/run_eval.py` (in Creator's install directory)
-   - **Behavior evaluation**: spawn a subagent to run the skill, then grade with the grader
-4. Aggregate results, produce benchmark
-5. Call Creator's `eval-viewer/generate_review.py` to render results
-6. Output improvement suggestions, but **do not start iteration automatically** — the user decides next steps
+Single evaluation pass against GT — produces a benchmark, does NOT
+enter the iteration loop. Defaults to `LocalEvaluator` (deterministic,
+no LLM subprocess); opt in to `CreatorEvaluator` in `evolve_plan.md`
+for additional trigger-F1 via Creator's `run_eval.py`. Improvement
+suggestions are printed but the user decides whether to proceed.
 
 ### Improve Mode
 
-Human-directed targeted improvement. You (Claude) orchestrate the full cycle.
-
-**Workflow:**
-1. Read the user's improvement instructions
-2. Read the current skill's SKILL.md + latest eval results + execution traces
-3. **Diagnose**: Read traces from the most recent eval (`evolve/iteration-E{N}/traces/`) to understand WHY specific cases fail
-4. **Plan**: Based on trace evidence, propose specific changes to the user (cite case IDs and trace evidence)
-5. **Apply**: Make the approved changes using the Edit tool (one atomic change at a time)
-6. **Verify**: Run one round of Eval (`python3 scripts/evolve_loop.py <skill> --gt <gt> --run --max-iterations 1`)
-7. **Report**: Show before/after comparison with per-case breakdown
-
-**Key difference from Evolve mode**: The human decides WHAT to change; Improve mode provides diagnostic evidence and executes the change. Evolve mode decides autonomously.
+Human-directed targeted fix. Claude reads the latest `iteration-E{N}/
+traces/` files to diagnose WHY specific cases fail, proposes changes
+citing case IDs + trace evidence, applies approved edits with the Edit
+tool (one atomic change at a time), re-runs one eval round, and
+reports before/after. **Human decides WHAT to change; Claude provides
+diagnostic evidence.** Unlike Evolve mode (which decides autonomously).
 
 ### Benchmark Mode
 
-Systematic comparison of two versions.
-
-**Usage:**
-```
-/skill-evolver benchmark <skill-v1> <skill-v2> --gt <gt-data>
-```
-
-**Workflow:**
-1. Run eval on both versions
-2. Call skill-creator's `scripts/aggregate_benchmark.py` to aggregate (in Creator's install directory)
-3. Optional: blind A/B comparison (reads this skill's `agents/comparator_agent.md` or Creator's full version)
-4. Optional: attribution analysis (reads Evolver's `agents/analyzer_agent.md`)
-5. Output benchmark report
-
-### Evolve Mode (Core)
-
-Automated iterative optimization. The core value of Evolver.
-
-**Usage:**
-```
-/skill-evolver evolve <skill-path>
-```
-The user might say "optimize this skill" and provide a path, or "here's some test data" with a file. GT data is not a required argument — if missing, Evolver constructs a starter GT: in the conversation path Claude interviews the user or infers cases from SKILL.md using Creator's test-case methodology by reference, and in CLI `--run` mode `scripts/llm.py::auto_construct_gt` generates cases via the configured LLM CLI.
-
-**Full protocol:** see `references/evolve_protocol.md`.
-
-**Summary of phases:**
+A/B compares two skill versions against the same GT. Example usage:
 
 ```
-Phase 0: Setup    → Create workspace + generate evolve_plan + establish baseline
-Phase 1: Review   → Read memory (results.tsv + experiments.jsonl + git log)
-Phase 2: Ideate   → Analyze failure modes, decide what to change (read agents/search_agent.md)
-                     Uses active diagnosis with execution traces (Meta-Harness pattern):
-                     replay failing cases, collect execution traces, then apply
-                     counterfactual diagnosis to isolate root causes
-                     Anti-patterns (do not guess, do not bundle unrelated changes,
-                     do not repeat a discarded change) are enforced in agents/search_agent.md.
-Phase 3: Modify   → Make one atomic change
-Phase 4: Commit   → git commit (mandatory — skill must be under git; if not, git init first)
-Phase 5: Verify   → Evaluate per evolve_plan strategy (calls Creator's evaluation capabilities)
-Phase 6: Gate     → Multi-gate keep/discard/revert decision (read references/gate_rules.md)
-Phase 7: Log      → Record to results.tsv + experiments.jsonl (read references/memory_schema.md)
-Phase 8: Loop     → Continue or terminate
+/skill-evolver benchmark ./skill-v1/ ./skill-v2/ --gt ./evals.json
 ```
 
-**Layered optimization strategy:**
+Optional blind comparison via `agents/comparator_agent.md` + attribution
+analysis via `agents/analyzer_agent.md`. Uses Creator's
+`scripts/aggregate_benchmark.py` for the numeric roll-up.
 
-```
-Layer 1: Description (trigger optimization) → call Creator's run_loop.py
-Layer 2: SKILL.md Body (behavior optimization) → Evolver's own capability
-Layer 3: Scripts/References (deep capability) → Evolver's own capability
-```
+### Evolve Mode (core)
 
-Hard constraint: only advance to the next layer when the current one plateaus. Cross-layer changes are not allowed. See `references/mutation_policy.md`.
+Automated 8-Phase iterative optimization — the core value of Evolver.
+Full protocol: `references/evolve_protocol.md`. Uses **layered
+mutation**: **Layer 1** (description / trigger) → **Layer 2** (SKILL.md
+body) → **Layer 3** (scripts / references) — only advance to the next
+layer when the current plateaus, cross-layer changes forbidden. See
+`references/mutation_policy.md`.
 
-**Once Evolve mode is entered, start executing the loop immediately. Do not wait for user instructions. Do not ask the user to run commands.** You (Claude) are the executor:
+Entry condition: user says something like "optimize this skill" with a
+path. GT data is auto-sourced: if `<workspace>/evals/evals.json` exists
+it's used as-is; otherwise Claude interviews the user inside the
+conversation (using Creator's test-case methodology by reference) or,
+in CLI `--run` mode, `scripts/llm.py::auto_construct_gt` generates
+starter cases via the configured LLM CLI.
 
-1. Call `python3 scripts/setup_workspace.py <skill-path>` to create the workspace
-2. **Prepare GT data (using Creator's capabilities):**
-   - Check if `<workspace>/evals/evals.json` already exists -> use it if so
-   - Check if the user provided data in the conversation (file paths, QA pairs, samples) -> construct GT from it
-   - If neither exists -> **invoke skill-creator's test case generation workflow**:
-     - Read the "Test Cases" section of Creator's SKILL.md for methodology
-     - Follow Creator's flow: understand skill -> write realistic test prompts -> run once -> draft assertions
-     - Save to `<workspace>/evals/evals.json`
-   - **Do not invent your own construction method** — Creator's workflow is battle-tested; reuse it directly
-   - If the user provided partial data (e.g., a few QA pairs), first convert them to standard GT format via Creator's workflow, then generate additional cases
-   - When new edge cases are discovered during iteration, supplement the GT using Creator's methodology
-3. Read GT data, run baseline evaluation on the SKILL.md, record baseline to results.tsv
-4. Begin the loop:
-   - Read memory -> analyze failures -> decide what to change -> make atomic edit with Edit -> git commit
-   - Run `python3 scripts/run_l1_gate.py <skill-path>` for verification
-   - Grade each case and assertion individually (L2 eval)
-   - Decide keep/discard -> if discard, git revert
-   - Write results.tsv + experiments.jsonl
-   - Decide whether to continue
-5. Output summary when the loop terminates
-6. **Launch the eval viewer for human review**: After the loop completes (and after holdout eval + cleanup), `evolve_loop.py` automatically calls Creator's `eval-viewer/generate_review.py` to render a static HTML review at `<workspace>/evolve/review.html`. The user opens this file to see the per-iteration trajectory, per-case grades, and best-version diff. This is the final hand-off to the human.
-
-Helper scripts (in `scripts/`) handle deterministic steps, but **you reason about what to change and how**.
-
-For unattended background execution (outside a conversation), use CLI mode:
-```bash
-python3 scripts/evolve_loop.py <skill-path> --gt <gt-json> --run --max-iterations 20
-```
-This uses `claude -p` subprocesses for LLM reasoning. But **the default scenario is you executing the loop directly in conversation**.
-
-Cleanup intermediate artifacts:
-```bash
-python3 scripts/evolve_loop.py <skill-path> --cleanup
-python3 scripts/evolve_loop.py <skill-path> --cleanup-versions
-```
+Claude executes the loop directly in conversation by default — see the
+**Quick Start** section at the top of this file for the concrete
+recipe. Helper scripts in `scripts/` handle deterministic steps
+(`setup_workspace`, `run_l1_gate`, `cleanup_best_versions`) but
+**Claude reasons about what to change and how**. After the loop
+terminates `orchestrator.run_evolve_loop` auto-launches Creator's
+`eval-viewer/generate_review.py` (if available) to render a static
+HTML review at `<workspace>/evolve/review.html`.
 
 ---
 
