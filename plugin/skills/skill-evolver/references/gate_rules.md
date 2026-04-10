@@ -179,3 +179,73 @@ A mutation that passes the quality gate but silently drops structural components
 - The proposer may only see dev set results and execution traces from dev cases
 - Holdout cases are visible only to the evaluator (Phase 5) and the gate (Phase 6)
 - Leaking holdout information into the search process defeats its purpose as a generalization check
+
+---
+
+## L1 Quality Rules (P0 Hard Rules)
+
+Added 2026-04-10, inspired by the skill-qa-workflow project (83 universal
+skill quality rules across 7 scan dimensions). These rules run in the L1
+Quick Gate (`scripts/run_l1_gate.py`) as regex/grep checks — no LLM needed,
+<100ms runtime overhead. They're checked **before the iteration loop starts**
+and don't iterate — they're pass/fail prerequisites.
+
+Using the "training model" analogy: **L1 quality rules are the data cleaning
+pipeline** (format validation + security scan before training starts). **L2 GT
+assertions are the training itself** (iterative optimization toward a target).
+
+| Rule | Severity | What |
+|------|----------|------|
+| SEC001 | **critical** | No `rm -rf /`, `DROP TABLE/DATABASE` in prompt content |
+| SEC003 | **critical** | No hardcoded secrets (`sk-*`, `ghp_*`, `AKIA*`, `password='literal'`) |
+| SEC002 | warning | No default `sudo` escalation |
+| SEC004 | warning | No `eval()` / `exec()` in prompt content |
+| SEC006 | warning | No `curl\|bash` pipe-to-execution |
+| S003+ | warning | description >= 50 chars (informative trigger surface) |
+| S004+ | warning | SKILL.md body >= 200 chars (substantive instructions) |
+| S007 | warning | SKILL.md 20-500 lines (appropriate granularity) |
+| TD011 | warning | No hardcoded `localhost:port` / `127.0.0.1` API URLs |
+| C001 | warning | No hardcoded `/Users/` / `/home/` absolute paths |
+| C005 | warning | UTF-8 encoding, no BOM |
+
+**Severity model**: `critical` = blocks L1 gate (iteration cannot start).
+`warning` = logged in `quality_findings` for Phase 2 diagnosis, does not
+block. This matches the skill-qa-workflow P0 (hard block) vs P1/P2
+(advisory) distinction.
+
+**Scanning scope**: `.md` files get full rule set with code-fence stripping
+(prevents false positives on documented anti-patterns). `.py`/`.sh` files
+only scanned for secrets (SEC003) — other rules would false-positive on the
+evaluation framework's own regex patterns and subprocess calls.
+
+---
+
+## Why No 6th Gate Dimension
+
+The current 5-way AND gate measures **relative behavioral change** after
+a mutation (did the skill get better or worse?). The skill-qa-workflow's
+6-dimension scoring model measures **absolute quality** (does the skill
+meet a standard?). These are complementary, not competing:
+
+| Layer | What it measures | How |
+|-------|-----------------|-----|
+| **L1 Quick Gate** | Absolute quality threshold | Binary pass/fail (quality rules above) |
+| **Phase 6 AND Gate** | Relative quality change | 5 dimensions, AND logic (quality + trigger + cost + latency + regression) |
+| **L2 GT Probes** | Quality-aware pass_rate | New probes (cases 41-48) add Q001/Q004/UX001/WD001 etc. to the dev-split metric |
+
+Adding a 6th "structural quality" dimension to Phase 6 would mean: even if
+pass_rate improved, if structural quality dropped, discard. But:
+
+1. L1 already handles the hard structural floor (P0 rules).
+2. L2 GT probes fold quality awareness INTO pass_rate (so quality regressions
+   show up as pass_rate regressions on cases 41-48).
+3. A separate structural_quality gate metric would need its own threshold
+   tuning and could cause false discards on legitimate refactors.
+
+**Decision**: don't add a 6th dimension. If future evidence shows mutations
+improving pass_rate while degrading structural quality (despite L1 and L2),
+revisit this decision then.
+
+**Future considerations** from skill-qa-workflow worth watching:
+- **Challenger concept** (competitive analysis, "justify your divergence") — not in scope now but could become a Phase 2 ideation strategy
+- **Fix-type tagging** (`[FIX:SKILL]` vs `[FIX:CLI]`) — useful for distinguishing what the loop can fix autonomously vs what requires engineering
