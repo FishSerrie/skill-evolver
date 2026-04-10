@@ -10,7 +10,7 @@
   "plugins": [
     {
       "name": "skill-evolver",
-      "version": "1.0.0",
+      "version": "0.6.0",
       "source": "./plugin",
       "description": "Skill auto-evolution engine - combines skill-creator evaluation + autoresearch iteration principles to automatically create, evaluate, and evolve Claude Code skills through gated optimization loops"
     }

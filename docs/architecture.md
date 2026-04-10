@@ -4,8 +4,8 @@
 
 # Skill Evolver 技术架构
 
-> 发布版本：v1.0
-> 最后更新：2026-04-08
+> 发布版本：v0.6
+> 最后更新：2026-04-10
 
 ---
 
@@ -299,17 +299,20 @@ skill-evolver/                          ← GitHub repo root
 │           │   ├── analyzer_agent.md        ← 归因分析
 │           │   ├── grader_agent.md          ← 指针文件 → Creator 的 grader.md
 │           │   └── comparator_agent.md      ← 指针文件 → Creator 的 comparator.md
-│           └── scripts/                    ← 13 个单一职责文件，每个 ≤ 650 行
+│           └── scripts/                    ← 15 个单一职责文件
 │               ├── __init__.py
 │               ├── common.py                ← Python 3.10+ version gate、Creator 路径发现、
 │               │                                find_workspace、parse_skill_md
-│               ├── setup_workspace.py       ← workspace + evals/checks/ 初始化
-│               ├── run_l1_gate.py           ← L1 快速门卫（调 Creator 的 quick_validate）
+│               ├── setup_workspace.py       ← workspace + evals/checks/ 初始化 + evolve_plan 模板
+│               ├── run_l1_gate.py           ← L1 快速门卫 + P0 质量规则（SEC001-006, S003+, TD011, C001）
 │               ├── run_l2_eval.py           ← L2 评测库函数
-│               ├── evaluators.py            ← Evaluator ABC + BinaryLLMJudge + LocalEvaluator
-│               │                                + get_evaluator 工厂（lazy-import backends）
+│               ├── evaluators.py            ← Evaluator ABC + LocalEvaluator + get_evaluator 工厂
+│               │                                + 向后兼容 re-exports
 │               ├── evaluator_backends.py    ← CreatorEvaluator + ScriptEvaluator + Pytest
 │               │                                Evaluator（仅在被工厂请求时才加载）
+│               ├── trace_enrichment.py      ← Per-assertion 富字段：locate_in_corpus / nearest_match
+│               │                                / check_script_rich / check_fact_coverage_rich
+│               ├── binary_judge.py          ← BinaryLLMJudge — 原子化 YES/NO LLM 调用
 │               ├── gate.py                  ← phase_6_gate_decision（纯函数、stdlib only）
 │               ├── llm.py                   ← LLM_BACKENDS + _call_llm + phase_2_3_ideate
 │               │                                + run_l2_eval_via_claude + auto_construct_gt
@@ -318,7 +321,7 @@ skill-evolver/                          ← GitHub repo root
 │               ├── orchestrator.py          ← run_evolve_loop（8 阶段驱动）+ main（CLI）
 │               │                                + _eval_holdout_or_none
 │               └── evolve_loop.py           ← Phase 函数 0/1/4/5/7/8 + git 辅助
-│                                                + persist_traces / write_traces_to_dir
+│                                                + persist_cases / write_cases_to_dir
 │                                                + CLI 入口（delegate 到 orchestrator.main）
 ├── .agents/skills/skill-evolver/       ← Codex 平台变体（自动同步）
 ├── .opencode/skills/skill-evolver/     ← OpenCode 平台变体（自动同步）
@@ -329,9 +332,9 @@ skill-evolver/                          ← GitHub repo root
 └── LICENSE
 ```
 
-总计：skill body + 13 个 scripts 文件，所有 scripts ≤ 650 行。
+总计：skill body + 15 个 scripts 文件（最大 822 行 evolve_loop.py）。
 
 ---
 
-*发布版本：v1.1 — 28 轮自进化（安全修复、scripts/ 拆分、Python 版本 gate、自然语言触发、traces 自动落盘、Layer-3 新文件支持）*
-*日期：2026-04-09*
+*发布版本：v0.6 — Meta-Harness trace 架构对齐 + L1 质量门控 + slim split（trace_enrichment + binary_judge）+ 自我迭代 126/126 全绿*
+*日期：2026-04-10*

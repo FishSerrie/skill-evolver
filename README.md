@@ -77,7 +77,7 @@ Three public SOTA projects each solve part of this, but nobody has fused them sp
 
 1. **5-way AND gate** — quality / trigger F1 / cost / latency / regression must *all* pass to keep. Any fail triggers a real `git revert`
 2. **Workspace git isolation** — experiment commits land in an independent git, zero pollution of the project git
-3. **Meta-evolution self-proof** — used on itself for 22 rounds (v1: 88.9% → 100%; v2: 71/71 all-green, 0 crashes), every round surfacing a bug the author couldn't see
+3. **Meta-evolution self-proof** — used on itself for 21+ iterations across two sessions (v1: 88.9% → 100%; v2: 126/126 all-green across 49 GT cases, 0 crashes), every iteration surfacing a bug the author couldn't see
 
 ---
 
@@ -466,12 +466,7 @@ your-skill-workspace/           # Sibling directory, shared by Creator + Evolver
     ├── results.tsv             # Experiment log (1 row per iteration)
     ├── experiments.jsonl       # Fine-grained per-case memory + diagnoses
     ├── best_versions/          # Snapshots of best skill versions (top 3)
-    ├── iteration-E1/
-    │   ├── benchmark.json      # Aggregated stats (run_l2_eval.write_benchmark)
-    │   ├── grading.json        # Per-case grades (run_l2_eval.write_grading)
-    │   └── traces/             # Per-case execution traces (Meta-Harness)
-    │       ├── case_1.md
-    │       └── case_2.md
+    ├── iteration-E*/           # Per-iteration artifacts (meta.json + cases/)
     └── review.html             # HTML eval viewer (if Creator available)
 ```
 
@@ -534,14 +529,14 @@ End users never see a CLI command; Claude handles all the mechanics
 internally. See `plugin/skills/skill-evolver/SKILL.md` **How the user
 invokes it** section for the full pattern list.
 
-### Auto-persisting traces (in-conversation mode)
+### Auto-persisting per-case traces (in-conversation mode)
 
-Meta-Harness diagnosis requires per-case trace files at
-`<workspace>/evolve/iteration-E{N}/traces/case_*.md`. For
+Meta-Harness diagnosis requires per-case JSON files at
+`<workspace>/evolve/iteration-E{N}/cases/case_*.json`. For
 in-conversation callers, `LocalEvaluator.full_eval` accepts an
-optional `traces_dir` kwarg that auto-writes the trace dict so the
-next iteration's Phase 1/2 has evidence to work from without
-calling `persist_traces` separately:
+optional `cases_dir` kwarg that auto-writes the structured traces so
+the next iteration's Phase 1/2 has evidence to grep/cat without
+calling `persist_cases` separately:
 
 ```python
 from evaluators import LocalEvaluator
@@ -550,9 +545,9 @@ r = LocalEvaluator().full_eval(
     skill_path,
     gt_path,
     split='dev',
-    traces_dir=workspace / 'evolve' / f'iteration-E{N}' / 'traces',
+    cases_dir=str(workspace / 'evolve' / f'iteration-E{N}' / 'cases'),
 )
-# case_1.md, case_2.md, ... auto-written to traces_dir
+# case_001.json, case_002.json, ... auto-written to cases_dir
 ```
 
 ---
@@ -582,24 +577,26 @@ skill-evolver/
 └── LICENSE                            # MIT
 ```
 
-### scripts/ layout (13 single-purpose files, every one ≤ 650 lines)
+### scripts/ layout (15 single-purpose files)
 
 After the iter-15 through iter-19 refactor, `plugin/skills/skill-evolver/scripts/` is split by concern. Every file owns one thing; `from evolve_loop import X` still works for back-compat via top-level re-exports and PEP 562 `__getattr__`.
 
 | File | Owns |
 |---|---|
-| `evolve_loop.py` | Phase functions 0 / 1 / 4 / 5 / 7 / 8 + git helpers + `persist_traces` / `write_traces_to_dir` + CLI entry (delegates to `orchestrator.main`) |
+| `evolve_loop.py` | Phase functions 0 / 1 / 4 / 5 / 7 / 8 + git helpers + `persist_cases` / `write_cases_to_dir` + CLI entry (delegates to `orchestrator.main`) |
 | `orchestrator.py` | `run_evolve_loop` (the 8-Phase driver) + `main` (argparse + dispatch) + `_eval_holdout_or_none` |
 | `gate.py` | `phase_6_gate_decision` — pure function, stdlib-only |
 | `llm.py` | `LLM_BACKENDS` registry + `_call_llm` / `_call_llm_http` + `phase_2_3_ideate_and_modify` + `run_l2_eval_via_claude` + `auto_construct_gt` |
 | `cleanup.py` | `_iter_num` + `cleanup_best_versions` + `cleanup_eval_outputs` + `_try_launch_eval_viewer` |
-| `evaluators.py` | `Evaluator` ABC + `BinaryLLMJudge` + `LocalEvaluator` + `get_evaluator` factory (lazy-imports backends) |
+| `evaluators.py` | `Evaluator` ABC + `LocalEvaluator` + `get_evaluator` factory (lazy-imports backends) + back-compat re-exports |
 | `evaluator_backends.py` | `CreatorEvaluator` + `ScriptEvaluator` + `PytestEvaluator` (lazy-loaded only when config requests them) |
+| `trace_enrichment.py` | Per-assertion rich field helpers: `locate_in_corpus` / `nearest_match` / `check_script_rich` / `check_fact_coverage_rich` / `check_json_schema_rich` |
+| `binary_judge.py` | `BinaryLLMJudge` — atomic YES/NO LLM calls with `judge_with_reasoning` rationale capture |
 | `common.py` | Python version gate + Creator path discovery + `find_workspace` + `parse_skill_md` |
 | `aggregate_results.py` | `parse_results_tsv` + `run_benchmark` A/B + markdown report formatter |
-| `run_l1_gate.py` | L1 quick-gate helper (calls Creator's `quick_validate.py`) |
+| `run_l1_gate.py` | L1 quick-gate helper + P0 quality rules (SEC001-006, S003+, TD011, C001, C005) with code-markup stripping |
 | `run_l2_eval.py` | L2 eval library helpers |
-| `setup_workspace.py` | Workspace bootstrap |
+| `setup_workspace.py` | Workspace bootstrap + evolve_plan.md template generation |
 | `__init__.py` | Package marker |
 
 See `plugin/skills/skill-evolver/SKILL.md` **Code Organization** section for the full import-graph and cycle-breaker design (PEP 562 `__getattr__` + lazy factory imports).
@@ -650,6 +647,6 @@ See `plugin/skills/skill-evolver/SKILL.md` **Code Organization** section for the
 
 - **[skill-creator](https://github.com/anthropics/skills/tree/main/skills/skill-creator)** by Anthropic — the evaluation engine. Hard dependency, called by reference, never copied. Creator updates flow into Evolver automatically.
 - **[AutoResearch](https://github.com/uditgoenka/autoresearch)** — Karpathy-inspired autonomous iteration loop that became Evolver's 8-phase outer loop with real keep/discard/revert (not "edit and forget")
-- **Meta-Harness** — execution-trace-based active diagnosis pattern from Meta's agent-optimization work. Every iteration must cite specific trace evidence from `iteration-E{N}/traces/case_*.md` before proposing a change. Auto-persisted by `LocalEvaluator.full_eval(..., traces_dir=...)`.
+- **Meta-Harness** — execution-trace-based active diagnosis pattern from Meta's agent-optimization work. Every iteration must cite specific trace evidence from `iteration-E{N}/cases/case_*.json` before proposing a change. Auto-persisted by `LocalEvaluator.full_eval(..., cases_dir=...)`.
 - **ServiceClaw QA V2** — "LLM classifies, program scores" evaluation philosophy
 - Built for the [Claude Code](https://claude.com/claude-code) ecosystem
