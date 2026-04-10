@@ -375,22 +375,27 @@ Memory is stored in the target skill's workspace under the `evolve/` subdirector
 
 ## Code Organization
 
-`scripts/` is split across 13 single-purpose files. Post Meta-Harness alignment (2026-04-09) three files grew past the original ≤ 610-line soft ceiling because the trace enrichment added substantive new functionality (per-assertion rich helpers, structured per-case output, dynamic suggested greps). Every line still earns its keep — slimming is a meta-evolution candidate for a later pass, not a cosmetic fix to block on now.
+`scripts/` is split across 15 single-purpose files after the 2026-04-10 slim split extracted the trace-enrichment helpers and `BinaryLLMJudge` out of the 1053-line monolith `evaluators.py`. Every file is now ≤ 822 lines; most are well under that.
 
 `from evolve_loop import X` still works for all the symbols listed
 below via top-level re-exports and PEP 562 module `__getattr__`, so
 external callers don't need to know where a symbol physically lives.
+Likewise `from evaluators import BinaryLLMJudge` and
+`from evaluators import <any trace helper>` keep working because
+`evaluators.py` re-exports everything from the two new leaf modules.
 
 | File | Owns | Lines |
 |---|---|---:|
-| `scripts/evaluators.py` | `Evaluator` ABC + `BinaryLLMJudge` (with `judge_with_reasoning` for LLM rationale capture) + `LocalEvaluator` (rich `_evaluate_assertion` returning paper §3 trace components + `_locate` / `_nearest_match` / `_build_skill_snapshot` / `_check_script_rich` / `_check_fact_coverage_rich` / `_check_json_schema_rich` helpers) + `_basic_schema_check` (bool) + `_basic_schema_check_with_path` (failure-path) + `get_evaluator` factory (lazy-imports backends) + `parse_evaluator_from_plan` + `EVALUATOR_NAMES` | 1053 |
 | `scripts/evolve_loop.py` | Phase functions 0/1/4/5/7/8 + `git_revert_last` + `save_best_version` + `persist_cases` + `write_cases_to_dir` + `write_meta_json` + `_list_untracked` + dynamic `suggested_greps` tailored to failing assertion types + PEP 562 `__getattr__` re-export of orchestrator symbols + `python scripts/evolve_loop.py` CLI entry (delegates to `orchestrator.main`) | 822 |
 | `scripts/llm.py` | `LLM_BACKENDS` registry + `_call_llm` / `_call_llm_http` / `_call_claude` + `phase_2_3_ideate_and_modify` (with full per-case JSON schema section in prompt + safe-default shape normalization) + `run_l2_eval_via_claude` + `_local_eval` + `auto_construct_gt` + `_validate_gt_schema` | 549 |
 | `scripts/orchestrator.py` | `run_evolve_loop` (the 8-Phase driver) + `main` (argparse + subcommand dispatch) + `_eval_holdout_or_none` + empty-dev-GT guard + revert-fail abort | 548 |
+| `scripts/evaluators.py` | `Evaluator` ABC + `LocalEvaluator` (thin `_evaluate_assertion` dispatcher that delegates to `trace_enrichment` module functions for all rich helpers) + `get_evaluator` factory (lazy-imports backends) + `parse_evaluator_from_plan` + `EVALUATOR_NAMES` + back-compat re-exports of `BinaryLLMJudge` (from `binary_judge`) and all trace helpers (from `trace_enrichment`) | 530 |
+| `scripts/trace_enrichment.py` | Paper §3 four-component trace helpers as pure module functions: `locate_in_corpus` / `excerpt` / `nearest_match` (state updates) + `build_skill_snapshot` (state updates) + `check_script_rich` (tool calls) + `check_fact_coverage_rich` (model outputs, takes `judge` as explicit param) + `check_json_schema_rich` (state updates with failure path) + `basic_schema_check` / `basic_schema_check_with_path` | 470 |
 | `scripts/common.py` | Python 3.10+ version gate + Creator path discovery + `find_workspace` + `parse_skill_md` + `validate_frontmatter` + `require_creator` / `CreatorNotFoundError` | 428 |
 | `scripts/aggregate_results.py` | `parse_results_tsv` + `calculate_summary` + `format_markdown` + `run_benchmark` A/B + `format_benchmark_markdown` | 389 |
 | `scripts/evaluator_backends.py` | `CreatorEvaluator` + `ScriptEvaluator` + `PytestEvaluator` (lazy-loaded by factory; forwards `cases_dir` kwarg to LocalEvaluator.full_eval) | 321 |
 | `scripts/run_l1_gate.py` | L1 quick-gate CLI helper + `run_l1_gate` library function | 193 |
+| `scripts/binary_judge.py` | `BinaryLLMJudge` class — atomic YES/NO LLM calls with `judge_with_reasoning` rationale capture (paper §3 "model outputs" trace component); lazy-imports `_call_llm` from `llm` module with stdlib-only fallback | 190 |
 | `scripts/setup_workspace.py` | `setup_workspace` library + CLI entry — creates workspace/evals/checks/ layout + evolve_plan.md template | 172 |
 | `scripts/cleanup.py` | `_iter_num` (shared numeric-sort helper) + `cleanup_best_versions` + `cleanup_eval_outputs` + `_try_launch_eval_viewer` (reads latest meta.json) | 159 |
 | `scripts/run_l2_eval.py` | L2 eval library helpers: `load_gt` + `aggregate_grades` + `calculate_stats` (write_benchmark / write_grading removed in the Meta-Harness refactor — now handled by evolve_loop.write_meta_json + persist_cases) | 139 |
@@ -400,25 +405,41 @@ external callers don't need to know where a symbol physically lives.
 **Import graph** (DAG, no cycles):
 
 ```
-              common.py ← (everyone imports Creator discovery + paths)
-                 ↑
-     ┌───────────┴────────────┐
-     │                        │
- evaluators.py            aggregate_results.py
- ├─ lazy→ evaluator_backends.py
- │        └─→ evaluators (ABC)
- │
- ├── gate.py (stdlib only)
- ├── llm.py (Evaluator → evaluators for type hints only)
- └── cleanup.py → aggregate_results (parse_results_tsv)
-                ↓
-         evolve_loop.py  ← imports gate / llm / cleanup / evaluators
-                ↓                           ↑ PEP 562 __getattr__
-         orchestrator.py ──────────────────┘
-           ← imports phase_* from evolve_loop
-           ← delegates CLI back to itself when invoked as
-             `python scripts/evolve_loop.py`
+           common.py ← (everyone imports Creator discovery + paths)
+               ↑
+               │
+    ┌──────────┴───────────────────────────┐
+    │                                      │
+    │        binary_judge.py               │
+    │          (stdlib only;               │
+    │           lazy → llm._call_llm)      │
+    │                 ↓                    │
+    │        trace_enrichment.py           │
+    │          (stdlib + common;           │
+    │           lazy → common.find_workspace)
+    │                 ↓                    │
+    └──→ evaluators.py ←────────────── aggregate_results.py
+         ├─ re-exports BinaryLLMJudge (from binary_judge)
+         ├─ re-exports trace helpers   (from trace_enrichment)
+         └─ lazy → evaluator_backends.py
+                   └─→ evaluators (ABC / LocalEvaluator)
+
+    gate.py (stdlib only)
+    llm.py
+    cleanup.py → aggregate_results (parse_results_tsv)
+         ↓
+    evolve_loop.py  ← imports gate / llm / cleanup / evaluators
+         ↓                           ↑ PEP 562 __getattr__
+    orchestrator.py ──────────────────┘
+      ← imports phase_* from evolve_loop
+      ← delegates CLI back to itself when invoked as
+        `python scripts/evolve_loop.py`
 ```
+
+`binary_judge.py` and `trace_enrichment.py` are pure leaves in the
+dependency tree (they only import from `common` and, lazily, from
+`llm`). Nothing imports from `evaluators` into them, so the split
+could not possibly introduce a cycle.
 
 Two deliberate cycle-breakers:
 

@@ -145,6 +145,7 @@ GT assertions reference helpers as workspace-relative paths:
 {"type": "script_check", "value": "evals/checks/check_X.py", "description": "..."}
 ```
 
-The evaluator's `_check_script` resolves workspace-relative paths via
-`find_workspace`, so this convention works for both standalone and
-plugin-hosted skills without code changes.
+The evaluator's `check_script_rich` (in `scripts/trace_enrichment.py`)
+resolves workspace-relative paths via `find_workspace`, so this
+convention works for both standalone and plugin-hosted skills without
+code changes.
