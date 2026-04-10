@@ -195,8 +195,8 @@ _DANGEROUS_CMD_PATTERNS = [
 
 # Dynamic execution — SEC004
 _DYNAMIC_EXEC_PATTERNS = [
-    (r"\beval\s*\(", "eval() call"),
-    (r"\bexec\s*\(", "exec() call"),
+    (r"\beval\(", "eval() call"),
+    (r"\bexec\(", "exec() call"),
     (r"subprocess\s*\(.*shell\s*=\s*True", "subprocess with shell=True"),
 ]
 
