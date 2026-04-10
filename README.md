@@ -446,32 +446,6 @@ touches only `LocalEvaluator` and never enters `evaluator_backends.py`.
 
 ---
 
-## Workspace Structure
-
-Evolver stores zero skill-specific data in its own directory. Everything lives alongside the target skill — at the **same level**, not nested inside:
-
-```
-your-skill/                     # Your skill (git-managed)
-├── SKILL.md
-├── references/
-└── scripts/
-
-your-skill-workspace/           # Sibling directory, shared by Creator + Evolver
-├── evals/
-│   ├── evals.json              # GT data (test cases + assertions)
-│   └── checks/                 # GT-referenced script_check helpers
-│       └── check_*.py          # canonical home per eval_strategy.md
-└── evolve/                     # Evolver-specific subdirectory
-    ├── evolve_plan.md          # Adaptive eval strategy (auto-generated)
-    ├── results.tsv             # Experiment log (1 row per iteration)
-    ├── experiments.jsonl       # Fine-grained per-case memory + diagnoses
-    ├── best_versions/          # Snapshots of best skill versions (top 3)
-    ├── iteration-E*/           # Per-iteration artifacts (meta.json + cases/)
-    └── review.html             # HTML eval viewer (if Creator available)
-```
-
----
-
 ## Configuration
 
 Gate thresholds are defined per-skill in `evolve_plan.md`:
