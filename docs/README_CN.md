@@ -28,6 +28,27 @@
 
 ---
 
+## 一句话理解：用训模型的思路训你的 Skill
+
+如果你做过机器学习，你已经懂了 Skill Evolver 在干什么。
+
+| 训模型 | 训 Skill（Skill Evolver） |
+|---|---|
+| Training data（训练数据） | **GT（Ground Truth）** — evals.json 里的 test cases + assertions |
+| 定义 loss function | **8 种 assertion 类型 + 5 维 AND 门控** — 不是单一数字，是多维度的"这个 skill 到底好不好"的定义 |
+| Train（梯度下降 / 迭代） | **8 阶段 loop** — search → modify → evaluate → gate → keep/discard → repeat |
+| 选 checkpoint | **best_versions/** — 每次 keep 的版本快照，最后选最好的 |
+| Overfitting 检测 | **holdout split**（Anti-Goodhart）— 迭代期间绝不暴露给 proposer |
+| Regression test | **regression split** — 防止改好了 A 坏了 B |
+| Learning rate / 搜索步长 | **分层 mutation**（description → body → scripts）— 从小改到大改 |
+| Early stopping | **stuck detection + convergence** — 连续 N 轮不 keep 就升层或停止 |
+
+**关键的一点**：这不是让 skill 的"语法检查"通过率更高。就像训模型不是让代码跑通 —— 是**让 skill 更贴合你的数据**。你的 GT 定义了"好的 skill 应该在什么输入下产出什么结果"，Skill Evolver 的 loop 让 skill 不断逼近那个目标，就像 SGD 让模型逼近 loss 的最小值。
+
+**你拿到的不只是一个"能跑"的 skill，而是一个在你定义的评测维度上被充分训练过的 skill。**
+
+---
+
 ## 为什么需要 Skill Evolver？
 
 为了解决全手工 skill 优化问题——每次依赖人工 review，发现不对再改，再测，如此反复。skill 质量严重依赖作者水平，**不可复现，不可扩展，不可审计**。

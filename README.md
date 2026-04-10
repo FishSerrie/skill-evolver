@@ -40,6 +40,27 @@
 
 ---
 
+## In one sentence: train your Skill the way you'd train a model
+
+If you've done machine learning, you already understand what Skill Evolver does.
+
+| Training a model | Training a Skill (Skill Evolver) |
+|---|---|
+| Training data | **GT (Ground Truth)** — test cases + assertions in evals.json |
+| Define loss function | **8 assertion types + 5-way AND gate** — multi-dimensional definition of "is this skill actually good?" |
+| Train (SGD / iteration) | **8-phase loop** — search → modify → evaluate → gate → keep/discard → repeat |
+| Pick a checkpoint | **best_versions/** — snapshot on every keep, select the best |
+| Overfitting detection | **holdout split** (Anti-Goodhart) — never shown to the proposer during iteration |
+| Regression test | **regression split** — make sure improving A doesn't break B |
+| Learning rate / step size | **Layered mutation** (description → body → scripts) — small changes first, big ones later |
+| Early stopping | **Stuck detection + convergence** — N consecutive discards triggers layer promotion or halt |
+
+**The key insight**: this is NOT about making a skill's "syntax check" pass rate higher. Just like training a model isn't about making the code compile — it's about **fitting the skill to your data**. Your GT defines "what a good skill should produce given these inputs", and Skill Evolver's loop drives the skill toward that target, the same way SGD drives a model toward the loss minimum.
+
+**What you get is not just a skill that "works" — it's a skill that has been systematically trained on your evaluation dimensions.**
+
+---
+
 ## Why Skill Evolver?
 
 **Skills** are the next standard abstraction across Claude Code, Codex CLI, and OpenCode — but **skill iteration is still entirely manual today**. Hand-edit, hand-test, repeat. Not reproducible, not scalable, not auditable.
