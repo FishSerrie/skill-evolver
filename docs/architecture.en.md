@@ -4,8 +4,8 @@
 
 # Skill Evolver — Technical Architecture
 
-> Release version: 1.0
-> Last updated: 2026-04-08
+> Release version: 0.6
+> Last updated: 2026-04-10
 
 ---
 
@@ -157,7 +157,7 @@ By splitting assertions this way, the system minimizes scoring noise (no open-en
 
 ### 4b. BinaryLLMJudge
 
-`BinaryLLMJudge` (defined in `scripts/evaluators.py`) is the low-level primitive behind every LLM-based assertion.
+`BinaryLLMJudge` (defined in `scripts/binary_judge.py`) is the low-level primitive behind every LLM-based assertion.
 
 **Interface**:
 
@@ -365,15 +365,30 @@ skill-evolver/                          ← GitHub repo root
 │           │   ├── analyzer_agent.md        ← attribution analysis
 │           │   ├── grader_agent.md          ← pointer file → Creator's grader.md
 │           │   └── comparator_agent.md      ← pointer file → Creator's comparator.md
-│           └── scripts/
+│           └── scripts/                    ← 15 single-purpose files
 │               ├── __init__.py
-│               ├── common.py                ← shared utilities + require_creator()
-│               ├── setup_workspace.py       ← workspace initialization
-│               ├── run_l1_gate.py           ← L1 quick gate (calls Creator's quick_validate)
-│               ├── run_l2_eval.py           ← L2 eval helpers
-│               ├── evaluators.py            ← LocalEvaluator framework + BinaryLLMJudge
-│               ├── aggregate_results.py     ← statistical aggregation
-│               └── evolve_loop.py           ← 8-phase orchestration + eval viewer launch
+│               ├── common.py                ← Python 3.10+ version gate, Creator path
+│               │                                discovery, find_workspace, parse_skill_md
+│               ├── setup_workspace.py       ← workspace + evals/checks/ bootstrap + evolve_plan template
+│               ├── run_l1_gate.py           ← L1 quick gate + P0 quality rules (SEC001-006, S003+, TD011, C001)
+│               ├── run_l2_eval.py           ← L2 eval library helpers
+│               ├── evaluators.py            ← Evaluator ABC + LocalEvaluator + get_evaluator factory
+│               │                                + back-compat re-exports
+│               ├── evaluator_backends.py    ← CreatorEvaluator + ScriptEvaluator + Pytest
+│               │                                Evaluator (lazy-loaded only when requested)
+│               ├── trace_enrichment.py      ← per-assertion rich fields: locate_in_corpus /
+│               │                                nearest_match / check_script_rich / check_fact_coverage_rich
+│               ├── binary_judge.py          ← BinaryLLMJudge — atomic YES/NO LLM calls
+│               ├── gate.py                  ← phase_6_gate_decision (pure function)
+│               ├── llm.py                   ← LLM_BACKENDS + _call_llm + phase_2_3_ideate
+│               │                                + run_l2_eval_via_claude + auto_construct_gt
+│               ├── cleanup.py               ← _iter_num + cleanup_* + _try_launch_eval_viewer
+│               ├── aggregate_results.py     ← results.tsv parser + A/B benchmark
+│               ├── orchestrator.py          ← run_evolve_loop (8-phase driver) + main (CLI)
+│               │                                + _eval_holdout_or_none
+│               └── evolve_loop.py           ← Phase functions 0/1/4/5/7/8 + git helpers
+│                                                + persist_cases / write_cases_to_dir
+│                                                + CLI entry delegating to orchestrator.main
 ├── docs/
 │   ├── architecture.md                 ← this document (Chinese)
 │   ├── architecture.en.md              ← this document (English)
@@ -392,5 +407,5 @@ skill-evolver/                          ← GitHub repo root
 
 ---
 
-*Release: v1.0*
-*Date: 2026-04-08*
+*Release: v0.6 — Meta-Harness trace architecture + L1 quality gate + slim split (trace_enrichment + binary_judge) + self-evolution 126/126 all-green*
+*Date: 2026-04-10*

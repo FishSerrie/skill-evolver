@@ -2,55 +2,70 @@
 
 # Skill Evolver
 
-**Claude Code Skill 自动进化引擎。** 给它一个 skill + 测试数据，它会通过门控评测循环自动迭代优化 skill——无需人工干预。
-
-**三大核心支柱**（缺一不可）：
-
-| 支柱 | 来源 | 提供什么 |
-|---|---|---|
-| **Creator**（核心评测能力） | [skill-creator](https://github.com/anthropics/skills/tree/main/skills/skill-creator) — Anthropic 官方 skill | 评测、打分、对比协议；HTML eval viewer；快速校验 |
-| **AutoResearch**（迭代方法论） | [AutoResearch](https://github.com/uditgoenka/autoresearch) — Karpathy 自主迭代思想 | 8 阶段外循环：搜索 → 修改 → 验证 → 门控 → keep/discard → 循环 |
-| **Meta-Harness Trace**（诊断方式） | Meta 的执行轨迹诊断模式 | 每个 case 存完整 trace；每次提改动前必须 cite trace 证据；反事实诊断 |
-
-**Creator 是硬依赖**——找不到就报错并给安装指引，不静默降级。Evolver 通过引用调用 Creator 的能力，**不复制**。Creator 更新后 Evolver 自动受益。
+> **Point it at a skill. Wake up to a better skill.**
+>
+> 给它一个 skill，告诉它 GT 数据在哪里，它会在 8 阶段循环里自动搜索 → 修改 → 评测 → 门控 → 保留或丢弃，直到收敛或达到最大迭代数。**全程零人工干预。**
 
 ```
-          ┌─────────────┐
-          │  你的 Skill   │
-          └──────┬───────┘
-                 │
-    ┌────────────▼────────────┐
-    │     Skill Evolver       │
-    │                         │
-    │  搜索 → 修改 →           │
-    │  评测 → 门控 →           │
-    │  保留/丢弃 → 循环        │
-    └────────────┬────────────┘
-                 │
-          ┌──────▼───────┐
-          │  更好的 Skill  │
-          └──────────────┘
+            ┌──────────────────┐
+            │    Your Skill    │
+            └────────┬─────────┘
+                     │
+                     ▼
+    ┌──────────────────────────────────┐
+    │          Skill Evolver           │
+    │                                  │
+    │    search → modify → evaluate    │
+    │      → gate → keep/discard       │
+    │             → repeat             │
+    └────────────────┬─────────────────┘
+                     │
+                     ▼
+            ┌──────────────────┐
+            │  A Better Skill  │
+            └──────────────────┘
 ```
+
+---
+
+## 一句话理解：用训模型的思路训你的 Skill
+
+如果你做过机器学习，你已经懂了 Skill Evolver 在干什么。
+
+| 训模型 | 训 Skill（Skill Evolver） |
+|---|---|
+| Training data（训练数据） | **GT（Ground Truth）** — evals.json 里的 test cases + assertions |
+| 定义 loss function | **8 种 assertion 类型 + 5 维 AND 门控** — 不是单一数字，是多维度的"这个 skill 到底好不好"的定义 |
+| Train（梯度下降 / 迭代） | **8 阶段 loop** — search → modify → evaluate → gate → keep/discard → repeat |
+| 选 checkpoint | **best_versions/** — 每次 keep 的版本快照，最后选最好的 |
+| Overfitting 检测 | **holdout split**（Anti-Goodhart）— 迭代期间绝不暴露给 proposer |
+| Regression test | **regression split** — 防止改好了 A 坏了 B |
+| Learning rate / 搜索步长 | **分层 mutation**（description → body → scripts）— 从小改到大改 |
+| Early stopping | **stuck detection + convergence** — 连续 N 轮不 keep 就升层或停止 |
+
+**关键的一点**：这不是让 skill 的"语法检查"通过率更高。就像训模型不是让代码跑通 —— 是**让 skill 更贴合你的数据**。你的 GT 定义了"好的 skill 应该在什么输入下产出什么结果"，Skill Evolver 的 loop 让 skill 不断逼近那个目标，就像 SGD 让模型逼近 loss 的最小值。
+
+**你拿到的不只是一个"能跑"的 skill，而是一个在你定义的评测维度上被充分训练过的 skill。**
 
 ---
 
 ## 为什么需要 Skill Evolver？
 
-**skill-creator** 可以创建和评测 skill——但改进是手动的。你看评测结果，决定改什么，编辑，再评测，如此反复。
+为了解决全手工 skill 优化问题——每次依赖人工 review，发现不对再改，再测，如此反复。skill 质量严重依赖作者水平，**不可复现，不可扩展，不可审计**。
 
-**skill-evolver** 把这整个外循环自动化了：
+### 业界相关支撑思路
 
-| | skill-creator | skill-evolver |
+| 支柱 | 来源 | 提供给我们的思路 / 能力 |
 |---|---|---|
-| 创建 skill | 支持 | 支持（调用 creator） |
-| 评测 skill | 支持 | 支持（调用 creator） |
-| 改进 skill | 手动 | **自动** |
-| 多门控质量控制 | 无 | **支持** |
-| 实验记忆 | 无 | **支持** |
-| A/B 对比评测 | 支持 | 支持（调用 creator） |
-| 自主进化循环 | 无 | **核心价值** |
+| **评测引擎** | [skill-creator](https://github.com/anthropics/skills/tree/main/skills/skill-creator)（Anthropic 官方） | 评测、打分、对比协议；测试用例设计、完整评测体系 |
+| **自主迭代外循环** | [Karpathy autoresearch](https://github.com/karpathy/autoresearch) → [uditgoenka/autoresearch](https://github.com/uditgoenka/autoresearch)（skill 化） | `modify → verify → keep/discard → repeat` 8 阶段外循环，5 条原则：one metric / constrained scope / fast verification / automatic rollback / git as memory |
+| **失败诊断思路**（受 Meta-Harness 启发） | [Stanford Meta-Harness](https://arxiv.org/pdf/2603.28052)（Lee et al. 2026） | **论文原话**："access to raw execution traces is the key ingredient for enabling harness search"。论文 Table 3 ablation：只给分数 34.6 → 加摘要 34.9（几乎没动）→ 给完整 trace **50.0**。**我们借鉴的思路**：不要只给 proposer 分数，要把评测过程的原始信息（每个 case 的 prompt + skill 输出 + per-assertion PASS/FAIL）结构化暴露给它，让诊断建立在"看现场"而不是"猜分数"上 |
 
-**Evolver 调用 Creator，不复制。** Creator 更新后，Evolver 自动受益。
+### Skill Evolver 的增量贡献
+
+1. **5 维 AND 门控**：质量 / 触发 F1 / 成本 / 时延 / 回归全部通过才 keep，任一不过即 `git revert`
+2. **Workspace git 隔离**：实验 commit 落独立 git，零项目污染
+3. **Meta-evolution 自证**：用自己迭代自己 22 轮（v1 88.9%→100%，v2 71/71 全绿 0 crash），每轮都发现作者看不见的 bug
 
 ---
 
@@ -158,13 +173,15 @@ Evolver 按层级递进修改 skill：
 
 ## 五个模式
 
+> **Evolve 是整个工具存在的原因，其他 4 个模式都是为它服务的。**
+
 | 模式 | 命令 | 功能 | 调用 Creator？ |
 |---|---|---|---|
-| **Create** | `/skill-evolver create` | 从需求 + GT 生成新 skill | 是 |
-| **Eval** | `/skill-evolver eval` | 单次评测，输出 benchmark 报告 | 是 |
-| **Improve** | `/skill-evolver improve` | 人主导定向改进 | 是 |
-| **Benchmark** | `/skill-evolver benchmark` | A/B 盲评对比 | 是 |
-| **Evolve** | `/skill-evolver evolve` | **自主优化循环** | 部分 |
+| ⭐ **Evolve**（核心） | `/skill-evolver evolve` | **自主优化循环，无人值守**——8 阶段 loop 自动跑到收敛或最大迭代数，`keep/discard/revert` 都是真的执行 | 部分 |
+| Eval | `/skill-evolver eval` | 单次评测，输出 benchmark 报告 | 是 |
+| Create | `/skill-evolver create` | 从需求 + GT 生成新 skill | 是 |
+| Improve | `/skill-evolver improve` | 人主导定向改进（人决定改什么，Evolver 给 trace 诊断证据并执行） | 是 |
+| Benchmark | `/skill-evolver benchmark` | A/B 盲评对比两个版本 | 是 |
 
 模式串联：
 
@@ -219,24 +236,27 @@ GT 是进化的燃料。没有 GT，不会开始优化。
 
 ## Workspace 结构
 
-Evolver 自身目录**不存储任何** skill 特定数据。所有数据放在目标 skill 的 workspace 中：
+Evolver 自身目录**不存储任何** skill 特定数据。所有数据放在目标 skill 的 workspace 中——和 skill 本体**平级**：
 
 ```
-your-project/
-├── my-skill/                       # 你的 skill（git 管理）
-│   ├── SKILL.md
-│   ├── references/
-│   └── scripts/
-└── my-skill-workspace/             # 共享 workspace（Creator + Evolver）
-    ├── evals/
-    │   └── evals.json              # GT 数据
-    ├── iteration-1/                # Creator 的评测迭代
-    └── evolve/                     # Evolver 专属数据
-        ├── evolve_plan.md          # 自适应评测策略
-        ├── results.tsv             # 实验日志（每轮一行）
-        ├── experiments.jsonl       # 细粒度记忆
-        ├── best_versions/          # 最优版本快照
-        └── summary.md              # 最终进化报告
+your-skill/                         # 你的 skill（git 管理）
+├── SKILL.md
+├── references/
+└── scripts/
+
+your-skill-workspace/               # 和 skill 平级，Creator 和 Evolver 共享
+├── evals/
+│   └── evals.json                  # GT 数据
+├── iteration-1/                    # Creator 的评测迭代
+└── evolve/                         # Evolver 专属子目录
+    ├── evolve_plan.md              # 自适应评测策略
+    ├── results.tsv                 # 实验日志（每轮一行）
+    ├── experiments.jsonl           # 细粒度记忆
+    ├── best_versions/              # 最优版本快照
+    ├── iteration-E1/
+    │   ├── meta.json               # 迭代元数据 + 聚合快照
+    │   └── cases/case_*.json       # per-case 结构化 trace（Meta-Harness）
+    └── summary.md                  # 最终进化报告
 ```
 
 ---
@@ -485,6 +505,6 @@ MIT
 
 - **[skill-creator](https://github.com/anthropics/skills/tree/main/skills/skill-creator)** by Anthropic — 评测引擎本身。硬依赖，引用调用，不复制。Creator 更新后 Evolver 自动受益。
 - **[AutoResearch](https://github.com/uditgoenka/autoresearch)** — Karpathy 启发的自主迭代外循环，演化为 Evolver 的 8 阶段 loop（含真实 keep/discard/revert，不是改了就不管）
-- **[Meta-Harness](https://arxiv.org/abs/2506.xxxxx)** — 执行轨迹诊断思想，Evolver 的 active diagnosis 协议要求每次提改动前必须 cite trace 证据
+- **Meta-Harness** — Meta 的 agent-optimization 执行轨迹诊断思想。Evolver 的 active diagnosis 协议要求每次提改动前必须 cite 具体 trace 证据（`iteration-E{N}/cases/case_*.json`）。由 `LocalEvaluator.full_eval(..., cases_dir=...)` 自动落盘。
 - **ServiceClaw QA V2** — "LLM 二元分类 + 程序算分" 评测哲学的灵感来源
 - 为 [Claude Code](https://claude.com/claude-code) 生态系统而建

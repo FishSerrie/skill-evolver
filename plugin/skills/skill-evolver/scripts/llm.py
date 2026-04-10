@@ -174,14 +174,32 @@ def phase_2_3_ideate_and_modify(skill_path: Path, workspace: Path,
     recent_failures = json.dumps(review.get("recent_failures", []), ensure_ascii=False)
     successful = json.dumps(review.get("successful_patterns", []), ensure_ascii=False)
 
-    # Meta-Harness: include trace evidence for active diagnosis
-    trace_context = ""
-    recent_traces = review.get("recent_traces", {})
-    if recent_traces:
-        trace_lines = []
-        for name, content in list(recent_traces.items())[:5]:
-            trace_lines.append(f"--- {name} ---\n{content}")
-        trace_context = "\n".join(trace_lines)
+    # Meta-Harness §2 filesystem access: give Claude file paths, not
+    # preloaded content. Claude uses the Read/Grep tools (both in CLI
+    # `claude -p` mode and in-conversation mode) to selectively pull
+    # case JSON content. This matches paper §2:
+    #   "the proposer retrieves via standard operations such as grep
+    #    and cat rather than ingesting them as a single prompt"
+    cases_dir = review.get("cases_dir")
+    failed_case_paths = review.get("failed_case_paths", [])
+    suggested_greps = review.get("suggested_greps", [])
+    last_meta_json = review.get("last_meta_json")
+
+    path_context_lines = []
+    if last_meta_json:
+        path_context_lines.append(
+            f"- Last iteration metadata: {last_meta_json}")
+    if cases_dir:
+        path_context_lines.append(
+            f"- Per-case JSONs (grep-friendly): {cases_dir}/case_*.json")
+    if failed_case_paths:
+        path_context_lines.append(
+            f"- Failing cases (read these first): {', '.join(failed_case_paths[:10])}")
+    if suggested_greps:
+        path_context_lines.append("- Suggested greps:")
+        for g in suggested_greps:
+            path_context_lines.append(f"    {g}")
+    path_context = "\n".join(path_context_lines)
 
     diagnosis_context = ""
     past_diagnoses = review.get("past_diagnoses", [])
@@ -198,21 +216,97 @@ Successful patterns: {successful}
 Current best metric: {review.get('current_best_metric', 'unknown')}
 Is stuck: {review.get('stuck', False)}
 
-{"## Execution Traces (from most recent eval)" + chr(10) + trace_context if trace_context else ""}
+{"## Trace files (read selectively with the Read and Grep tools — do NOT try to read all of them)" + chr(10) + path_context if path_context else ""}
+
+## Per-case JSON schema (what to look for inside each case_{{id}}.json)
+
+Each case JSON produced by LocalEvaluator.full_eval carries the
+Meta-Harness paper §3 four trace components in structured form. When
+you Read a case file, look for these fields by assertion type —
+they're the difference between guessing and diagnosing.
+
+  case.skill_loaded  (state updates trace component)
+    - path, size_bytes, skill_md_lines
+    - description_chars            ← front-matter description length
+    - references_loaded: [str]     ← what the evaluator corpus-loaded
+    - agents_loaded: [str]
+
+  case.summary.failed_indexes: [int]  ← the exact assertions that failed
+
+  assertion (common fields)
+    - index, type, value, description, pass
+
+  assertion.type == "contains" (or "regex")
+    PASS: match.file / match.line / match.excerpt
+          → tells you WHERE the needle hit; useful for cross-checking
+            that the match landed in the intended section
+    FAIL: nearest_match: {{matched_text, missing_suffix|missing_prefix,
+                           match_ratio, file, line, excerpt}} or None
+          → if nearest_match is populated, the needle is CLOSE to
+            appearing — usually a whitespace/punctuation diff. If None,
+            the content is missing entirely.
+
+  assertion.type == "not_contains"
+    FAIL: found_at: {{file, line, excerpt}}
+          → tells you WHERE the forbidden string actually lives so
+            you can delete it precisely
+
+  assertion.type == "script_check"  (tool calls trace component)
+    BOTH: exit_code, stdout, stderr, duration_ms, resolved_path
+          → exit_code + stdout/stderr are THE reason a script_check
+            failed. DO NOT re-run the script — read these fields
+            from the case JSON and diagnose from there.
+
+  assertion.type == "path_hit"  (model outputs trace component)
+    BOTH: judge_reasoning: str
+          → the LLM judge's 1-2 sentence rationale. If it says "found
+            at line 42", go Read that line in the skill source.
+
+  assertion.type == "fact_coverage" preset mode  (model outputs ×N)
+    BOTH: judge_verdicts: [{{fact, verdict, reasoning}}]
+          passed_facts, total_facts
+          → find the facts whose verdict is false; the reasoning
+            tells you why each one was marked missing
+
+  assertion.type == "fact_coverage" online mode
+    BOTH: keyword_hits: [str], keyword_total
+
+  assertion.type == "json_schema"
+    PASS: extracted_from ("fenced_code_block" | "raw_content")
+    FAIL, schema itself broken: schema_error
+    FAIL, content JSON didn't parse: parse_error, extracted_from
+    FAIL, schema mismatch: schema_mismatch_path ("$.items[2].name"),
+                           extracted_from
 
 {"## Past Diagnoses (insights from prior iterations)" + chr(10) + diagnosis_context if diagnosis_context else ""}
 
-MANDATORY PROTOCOL (Meta-Harness active diagnosis):
-1. If traces are provided, READ THEM FIRST — identify the specific assertion
-   that failed and WHY it failed based on the trace evidence
-2. State your diagnosis: "Case X failed because [specific reason from trace]"
-3. Then propose ONE atomic change that directly addresses the diagnosed cause
-4. Do NOT guess — if no trace evidence points to a clear cause, say so
+MANDATORY PROTOCOL (Meta-Harness §2 active diagnosis):
+1. If failed_case_paths are listed, READ THEM FIRST using the Read tool —
+   each case_{{id}}.json has a "summary.failed_indexes" array pointing
+   at which assertions failed. Use it to jump straight to the failing
+   assertion record without scanning the whole file.
+2. Inside each failing assertion, look for the type-specific rich
+   fields (above). Don't just read "pass": false — read the exact
+   trace evidence. A contains failure with nearest_match.match_ratio
+   of 0.9 means something very different from nearest_match == None.
+3. For cross-iteration patterns, use the suggested greps with the Grep
+   tool — e.g. grep for "pass": false across iteration-E*/cases/*.json
+   to see if the same case has been failing repeatedly.
+4. State your diagnosis in the format:
+     "Case X assertion Y (type=Z) failed because [specific field
+      evidence from the case JSON, e.g. 'stderr shows
+      ModuleNotFoundError: foo' or 'nearest_match found at
+      SKILL.md:87 with match_ratio 0.9 — missing the leading slash']"
+5. Then propose ONE atomic change that directly addresses the
+   diagnosed cause.
+6. Do NOT guess — if no case JSON evidence points to a clear cause,
+   say so and either fall back to exploring less-tried mutation types
+   or ask for a GT probe expansion.
 
 Read the SKILL.md at {skill_path / 'SKILL.md'}, then make your change.
 
 After making the change, output EXACTLY this JSON on the last line:
-{{"changed": true, "description": "one sentence describing what you changed", "mutation_type": "body_rewrite", "diagnosis": "Case X failed because Y, so I changed Z"}}
+{{"changed": true, "description": "one sentence describing what you changed", "mutation_type": "body_rewrite", "diagnosis": "Case X assertion Y failed because [trace evidence]; I changed Z"}}
 
 If you find nothing to improve, output:
 {{"changed": false, "description": "no improvement found", "mutation_type": "none", "diagnosis": ""}}
@@ -220,17 +314,31 @@ If you find nothing to improve, output:
 
     response = _call_claude(prompt, model=model, timeout=180)
 
-    # Parse the JSON from the last line
+    # Parse the JSON from the last line and VALIDATE shape.
+    # Red-team finding #1 (iter 30): the prior code returned the parsed
+    # dict as-is, so a malformed LLM response like `{"changed": true}`
+    # (missing `description` / `mutation_type`) would crash the
+    # orchestrator's `result_23['description']` access with a KeyError.
+    # Instead, normalize the dict with safe defaults so every caller
+    # sees a well-formed shape even when the LLM output is partial.
     for line in reversed(response.split("\n")):
         line = line.strip()
         if line.startswith("{") and "changed" in line:
             try:
-                return json.loads(line)
+                parsed = json.loads(line)
             except json.JSONDecodeError:
-                pass
+                continue
+            if not isinstance(parsed, dict):
+                continue
+            return {
+                "changed": bool(parsed.get("changed", False)),
+                "description": str(parsed.get("description", "llm did not provide description")),
+                "mutation_type": str(parsed.get("mutation_type", "unknown")),
+                "diagnosis": str(parsed.get("diagnosis", "")),
+            }
 
     return {"changed": False, "description": "could not parse claude response",
-            "mutation_type": "none"}
+            "mutation_type": "none", "diagnosis": ""}
 
 
 # ─────────────────────────────────────────────
@@ -365,25 +473,77 @@ Requirements:
 
     response = _call_llm(prompt, model=model, timeout=180)
 
-    # Parse JSON from response
+    # Parse JSON from response, then VALIDATE shape before writing.
+    # Red-team finding #3 (iter 30): the prior code wrote whatever the
+    # LLM returned directly to evals.json. A malformed response like
+    # `{"evals": [{"id": 1, "prompt": "test"}]}` (missing `assertions`,
+    # no `split`) would pass through, poisoning the baseline eval with
+    # zero-assertion cases that artificially inflate pass_rate to 1.0.
+    data = None
     for line in response.split("\n"):
         line = line.strip()
         if line.startswith("{") and '"evals"' in line:
             try:
                 data = json.loads(line)
-                output_path.write_text(json.dumps(data, indent=2, ensure_ascii=False))
-                return {"count": len(data.get("evals", []))}
+                break
             except json.JSONDecodeError:
                 pass
+    if data is None:
+        json_match = re.search(r'\{[\s\S]*"evals"[\s\S]*\}', response)
+        if json_match:
+            try:
+                data = json.loads(json_match.group())
+            except json.JSONDecodeError:
+                pass
+    if data is None:
+        return None
 
-    # Try to find JSON block in the full response
-    json_match = re.search(r'\{[\s\S]*"evals"[\s\S]*\}', response)
-    if json_match:
-        try:
-            data = json.loads(json_match.group())
-            output_path.write_text(json.dumps(data, indent=2, ensure_ascii=False))
-            return {"count": len(data.get("evals", []))}
-        except json.JSONDecodeError:
-            pass
+    # Schema validation — every case must have a non-empty assertions
+    # list plus prompt + split. Reject the whole batch on any violation
+    # (safer than partial writes; the caller can retry or fall back).
+    valid = _validate_gt_schema(data)
+    if not valid:
+        return None
 
-    return None
+    output_path.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    return {"count": len(data.get("evals", []))}
+
+
+def _validate_gt_schema(data: object) -> bool:
+    """Return True if ``data`` matches the GT schema strictly enough to
+    be safely written to ``evals.json``.
+
+    Checks every case has: int-convertible ``id``, non-empty string
+    ``prompt``, non-empty list ``assertions`` where each assertion has
+    a string ``type``, and a ``split`` string. Extra keys are ignored.
+    Zero-assertion cases are rejected because they inflate ``pass_rate``
+    to 1.0 (the ``if total_t else 0`` guard in LocalEvaluator treats a
+    no-op case as trivially passing).
+    """
+    if not isinstance(data, dict):
+        return False
+    evals = data.get("evals")
+    if not isinstance(evals, list) or not evals:
+        return False
+    valid_splits = {"dev", "holdout", "regression"}
+    for case in evals:
+        if not isinstance(case, dict):
+            return False
+        if "id" not in case:
+            return False
+        prompt = case.get("prompt")
+        if not isinstance(prompt, str) or not prompt.strip():
+            return False
+        assertions = case.get("assertions")
+        if not isinstance(assertions, list) or not assertions:
+            return False
+        for a in assertions:
+            if not isinstance(a, dict):
+                return False
+            atype = a.get("type")
+            if not isinstance(atype, str) or not atype:
+                return False
+        split = case.get("split", "dev")
+        if split not in valid_splits:
+            return False
+    return True

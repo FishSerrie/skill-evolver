@@ -38,8 +38,9 @@ tail -20 <workspace>/evolve/results.tsv
 # 3. Fine-grained memory (if exists)
 tail -10 <workspace>/evolve/experiments.jsonl
 
-# 4. Execution traces from the most recent failed iteration
-ls <workspace>/evolve/iteration-E{N}/traces/
+# 4. Most recent iteration's metadata + per-case traces (paper §2 grep/cat model)
+cat <workspace>/evolve/iteration-E{N-1}/meta.json
+grep -l '"pass": false' <workspace>/evolve/iteration-E*/cases/*.json
 ```
 
 **Extract from memory:**
@@ -49,7 +50,7 @@ ls <workspace>/evolve/iteration-E{N}/traces/
 - Which cases are fragile (easily regressed) -- use as regression guards
 - Whether stuck (5+ consecutive discards) -- switch to radical strategy
 
-**Read execution traces from `evolve/iteration-E{N}/traces/` for failed cases. Diagnose WHY failures happened, not just THAT they happened.**
+**Read per-case JSON files selectively from `evolve/iteration-E{N-1}/cases/` for failing cases. `phase_1_review` returns `failed_case_paths` — a list of the specific case JSON files with at least one failed assertion. Use the `Read` tool to open each one; use `Grep` for cross-iteration patterns. Do NOT try to ingest all cases — Phase 1 returns pointers, not content, per the Meta-Harness paper §2 access model ("the proposer retrieves via standard operations such as grep and cat rather than ingesting them as a single prompt"). Diagnose WHY failures happened, not just THAT they happened.**
 
 ---
 
@@ -136,22 +137,29 @@ git add .
 git commit -m "chore: init git for evolve tracking"
 ```
 
-**Step 3: Git not installed -- prompt installation**
-- Prompt the user to install, wait, do not auto-degrade:
+**Step 3: Git not installed -- refuse with install instructions (terminal)**
+
+Git is a **hard requirement** for the evolve loop. `phase_4_commit`
+commits experiments, `git_revert_last` rolls back discarded iterations,
+and `phase_1_review` reads the git log for Phase 2 diagnosis context.
+Every keep/discard decision is grounded in git state. There is no
+folder-based fallback — the loop cannot run without git.
+
+When `phase_0_setup` detects that the `git` binary is missing (the
+``git status`` subprocess raises ``FileNotFoundError``), it raises
+``RuntimeError`` with the actionable per-platform install instructions
+below:
+
 ```
-[WARN] Git not detected. Please install and retry:
+Phase 0: git is not installed. Install git and retry:
   macOS:  brew install git  or  xcode-select --install
   Ubuntu: sudo apt-get install git
   CentOS: sudo yum install git
   Windows: https://git-scm.com/download/win
 ```
 
-**Step 4: Git cannot be installed (no network / restricted environment) -- degrade**
-- Enable folder-based backup only after confirming git is unavailable:
-  1. Back up pre-modification files to `<workspace>/evolve/best_versions/pre-iteration-N/`
-  2. Record key line changes in experiments.jsonl
-  3. When gate decision is discard, manually restore from backup
-- **Tag results.tsv rows with `[no-git]` to remind the user to re-run with git later**
+Installing git on any modern platform takes under a minute. After
+install, re-run evolve and Step 1 or Step 2 will take over.
 
 
 
@@ -176,7 +184,7 @@ Orchestrated by Claude (spawn subagent + grader scoring), with `scripts/run_l2_e
 1. **Execute**: Spawn subagent, load skill, run each prompt
 2. **Grade**: Read `agents/grader_agent.md` (or Creator's full version), judge each assertion
 3. **Collect timing**: Record tokens and duration
-4. **Aggregate**: `run_l2_eval.aggregate_grades()` -- produces benchmark.json
+4. **Aggregate**: `run_l2_eval.aggregate_grades()` -- produces stats dict consumed by `evolve_loop.write_meta_json` (which writes iteration-E{N}/meta.json); per-case details go to iteration-E{N}/cases/case_{id}.json via `evolve_loop.persist_cases`
 5. **Focus areas**: High-priority assertion types marked in evolve_plan.md
 
 ### Strict Eval (trigger conditions defined by evolve_plan, ~10 minutes)

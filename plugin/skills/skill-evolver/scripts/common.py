@@ -1,9 +1,37 @@
 #!/usr/bin/env python3
 """Shared utilities for skill-evolver scripts."""
 
+import sys
+
+# Python version gate — run BEFORE any PEP 604 type hints below.
+#
+# skill-evolver's scripts use ``X | None`` union syntax (PEP 604) without
+# ``from __future__ import annotations`` in several files (common.py,
+# evolve_loop.py, run_l1_gate.py, run_l2_eval.py, setup_workspace.py,
+# aggregate_results.py). That syntax evaluates at runtime and fails on
+# Python 3.9 or older with a cryptic
+#   TypeError: unsupported operand type(s) for |: 'type' and 'NoneType'
+# raised during module import — a terrible first-time-user experience.
+#
+# Since every entry point (evolve_loop.py / run_l1_gate.py /
+# run_l2_eval.py / setup_workspace.py / aggregate_results.py) imports
+# from common.py before touching any of its own PEP 604 annotations,
+# and since common.py imports only stdlib BEFORE this check, running
+# the version gate here covers every path in the codebase.
+#
+# Documented dependency in SKILL.md Prerequisites: "Python 3.10+".
+if sys.version_info < (3, 10):
+    raise RuntimeError(
+        f"skill-evolver requires Python 3.10+ (you're running "
+        f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}). "
+        f"Several scripts use PEP 604 union type hints (X | None) without "
+        f"'from __future__ import annotations', which fail at runtime on 3.9 "
+        f"or older. Upgrade Python and retry. See SKILL.md Prerequisites "
+        f"for the full dependency list."
+    )
+
 import os
 import re
-import sys
 from pathlib import Path
 
 

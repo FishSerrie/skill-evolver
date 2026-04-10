@@ -10,7 +10,7 @@
 [![OpenCode](https://img.shields.io/badge/OpenCode-Skill-purple)](https://opencode.ai)
 [![Codex](https://img.shields.io/badge/Codex-Skill-green?logo=openai&logoColor=white)](https://developers.openai.com/codex)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://python.org)
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://python.org)
 
 **English** · [中文](docs/README_CN.md) · [Architecture](docs/architecture.en.md)
 
@@ -19,38 +19,65 @@
 ---
 
 ```
-          ┌─────────────┐
-          │  Your Skill  │
-          └──────┬───────┘
-                 │
-    ┌────────────▼────────────┐
-    │     Skill Evolver       │
-    │                         │
-    │  Search → Modify →      │
-    │  Evaluate → Gate →      │
-    │  Keep/Discard → Repeat  │
-    └────────────┬────────────┘
-                 │
-          ┌──────▼───────┐
-          │  Better Skill │
-          └──────────────┘
+            ┌──────────────────┐
+            │    Your Skill    │
+            └────────┬─────────┘
+                     │
+                     ▼
+    ┌──────────────────────────────────┐
+    │          Skill Evolver           │
+    │                                  │
+    │    search → modify → evaluate    │
+    │      → gate → keep/discard       │
+    │             → repeat             │
+    └────────────────┬─────────────────┘
+                     │
+                     ▼
+            ┌──────────────────┐
+            │  A Better Skill  │
+            └──────────────────┘
 ```
 
 ---
 
-## Design Philosophy — Three Pillars
+## In one sentence: train your Skill the way you'd train a model
 
-Skill Evolver fuses three state-of-the-art ideas. Each is a hard requirement, not an option:
+If you've done machine learning, you already understand what Skill Evolver does.
 
-| Pillar | Source | What it provides | How Evolver uses it |
-|---|---|---|---|
-| **Creator** (core capability) | [skill-creator](https://github.com/anthropics/skills/tree/main/skills/skill-creator) — official Anthropic skill | Evaluation, grading, comparison protocols; HTML eval viewer; quick validation | **Hard dependency.** `require_creator()` resolves Creator at startup or errors out. Grading reads Creator's `agents/grader.md` at runtime — no copies kept in Evolver. Creator updates take effect automatically. |
-| **AutoResearch** (loop methodology) | [AutoResearch](https://github.com/uditgoenka/autoresearch) — Karpathy's autonomous iteration pattern | The 8-phase outer loop: search → modify → verify → gate → keep/discard → repeat | Drives Evolver's `evolve_loop.py`. Each iteration is an atomic experiment with multi-gate AND decision and git-based rollback. Real keep/discard/revert — not "edit and forget". |
-| **Meta-Harness** (diagnosis) | Meta's Trace pattern for LLM agent optimization | Store full execution traces per case; cite trace evidence before proposing any fix; counterfactual diagnosis | Every evaluation writes per-case traces to `iteration-E{N}/traces/`. Phase 1 reads them, Phase 2 enforces a mandatory active diagnosis protocol — the search agent must cite specific trace evidence before any mutation. |
+| Training a model | Training a Skill (Skill Evolver) |
+|---|---|
+| Training data | **GT (Ground Truth)** — test cases + assertions in evals.json |
+| Define loss function | **8 assertion types + 5-way AND gate** — multi-dimensional definition of "is this skill actually good?" |
+| Train (SGD / iteration) | **8-phase loop** — search → modify → evaluate → gate → keep/discard → repeat |
+| Pick a checkpoint | **best_versions/** — snapshot on every keep, select the best |
+| Overfitting detection | **holdout split** (Anti-Goodhart) — never shown to the proposer during iteration |
+| Regression test | **regression split** — make sure improving A doesn't break B |
+| Learning rate / step size | **Layered mutation** (description → body → scripts) — small changes first, big ones later |
+| Early stopping | **Stuck detection + convergence** — N consecutive discards triggers layer promotion or halt |
 
-**Core evaluation principle:** LLM only makes atomic YES/NO judgments. Programs compute all scores. Same classification always produces the same score — zero scoring drift.
+**The key insight**: this is NOT about making a skill's "syntax check" pass rate higher. Just like training a model isn't about making the code compile — it's about **fitting the skill to your data**. Your GT defines "what a good skill should produce given these inputs", and Skill Evolver's loop drives the skill toward that target, the same way SGD drives a model toward the loss minimum.
 
-**No silent degradation:** Evolver does not contain "fallback copies" of Creator's grader/comparator. The pointer files in `agents/` redirect to Creator's full versions at runtime. If Creator updates its protocol, Evolver picks up the change on the next run.
+**What you get is not just a skill that "works" — it's a skill that has been systematically trained on your evaluation dimensions.**
+
+---
+
+## Why Skill Evolver?
+
+**Skills** are the next standard abstraction across Claude Code, Codex CLI, and OpenCode — but **skill iteration is still entirely manual today**. Hand-edit, hand-test, repeat. Not reproducible, not scalable, not auditable.
+
+Three public SOTA projects each solve part of this, but nobody has fused them specifically for skill optimization:
+
+| Pillar | Source | What it gives Evolver |
+|---|---|---|
+| **Evaluation engine** | [skill-creator](https://github.com/anthropics/skills/tree/main/skills/skill-creator) (official Anthropic skill) | Grading, comparison, HTML viewer, test-case design, full eval protocol. **Hard dependency, called by reference** — Creator updates auto-propagate |
+| **Autonomous outer loop** | [Karpathy autoresearch](https://github.com/karpathy/autoresearch) → [uditgoenka/autoresearch](https://github.com/uditgoenka/autoresearch) (skill-ified) | The `modify → verify → keep/discard → repeat` 8-phase loop and its 5 principles: one metric / constrained scope / fast verification / automatic rollback / git as memory. **Karpathy originally built it for autonomous optimization of nanochat LLM training code** (700 experiments in 2 days); uditgoenka generalized it into a Claude Code skill |
+| **Failure diagnosis philosophy** (inspired by Meta-Harness) | [Stanford Meta-Harness](https://arxiv.org/pdf/2603.28052) (Lee et al. 2026) | Paper quote: *"access to raw execution traces is the key ingredient for enabling harness search."* Table 3 ablation: Scores Only **34.6** → Scores+Summary **34.9** → Full traces **50.0**. **What we borrow**: don't hand the proposer just scores — expose the raw evaluation record (per-case prompt + skill output + per-assertion PASS/FAIL) so diagnosis is grounded in "seeing the scene", not guessing from numbers |
+
+### What Skill Evolver adds on top
+
+1. **5-way AND gate** — quality / trigger F1 / cost / latency / regression must *all* pass to keep. Any fail triggers a real `git revert`
+2. **Workspace git isolation** — experiment commits land in an independent git, zero pollution of the project git
+3. **Meta-evolution self-proof** — used on itself for 21+ iterations across two sessions (v1: 88.9% → 100%; v2: 126/126 all-green across 49 GT cases, 0 crashes), every iteration surfacing a bug the author couldn't see
 
 ---
 
@@ -239,11 +266,13 @@ Set `LLM_BACKEND=codex` (or `opencode`, `http`) to override auto-detection.
 
 ## Five Modes
 
-### Evolve (Core)
+> **Evolve is the reason this tool exists. The other four modes all exist to serve it.**
+
+### ⭐ Evolve (the core)
 ```bash
 /skill-evolver evolve ./my-skill/
 ```
-Autonomous optimization loop. Runs 8 phases per iteration until convergence or max iterations. No human intervention needed.
+**Autonomous optimization loop, unattended.** Runs the 8-phase loop until convergence or `max_iterations`. `keep / discard / revert` decisions are actually executed — not just logged. This is the whole point of Skill Evolver; every other mode below exists as scaffolding for this one.
 
 ### Eval
 ```bash
@@ -399,31 +428,45 @@ Not tied to any specific creator. Four built-in evaluators:
 
 | Evaluator | Use case | Command |
 |---|---|---|
-| `local` | Built-in assertion matching | `--evaluator local` |
-| `creator` | Enhances with trigger eval | `--evaluator creator` (default) |
+| `local` | Built-in assertion matching — deterministic, no subprocess, no LLM | `--evaluator local` |
+| `creator` | Wraps `local` + additionally calls Creator's `run_eval.py` for trigger F1 (default when no `--evaluator` is passed) | `--evaluator creator` |
 | `script` | Your own eval script | `--evaluator script --evaluator-script ./my_eval.py` |
 | `pytest` | Standard test framework | `--evaluator pytest --evaluator-test-cmd "pytest tests/"` |
+
+**Note on "lazy imports"**: `import evaluators` itself never loads the
+three non-default backends (`evaluator_backends.py` stays absent from
+`sys.modules`). The factory `get_evaluator` lazy-imports the specific
+backend class only when that backend is actually requested. Because
+the factory's built-in default is `creator`, the first call to
+`get_evaluator()` with no `evaluator` key will lazy-load
+`CreatorEvaluator` (which in turn holds a `LocalEvaluator` fallback
+internally). To skip the lazy load entirely, pass `--evaluator local`
+on the CLI or set `evaluator: local` in `evolve_plan.md` — that path
+touches only `LocalEvaluator` and never enters `evaluator_backends.py`.
 
 ---
 
 ## Workspace Structure
 
-Evolver stores zero skill-specific data in its own directory. Everything lives in the target skill's workspace:
+Evolver stores zero skill-specific data in its own directory. Everything lives alongside the target skill — at the **same level**, not nested inside:
 
 ```
-my-skill-workspace/
+your-skill/                     # Your skill (git-managed)
+├── SKILL.md
+├── references/
+└── scripts/
+
+your-skill-workspace/           # Sibling directory, shared by Creator + Evolver
 ├── evals/
-│   └── evals.json              # GT data
-└── evolve/
+│   ├── evals.json              # GT data (test cases + assertions)
+│   └── checks/                 # GT-referenced script_check helpers
+│       └── check_*.py          # canonical home per eval_strategy.md
+└── evolve/                     # Evolver-specific subdirectory
     ├── evolve_plan.md          # Adaptive eval strategy (auto-generated)
     ├── results.tsv             # Experiment log (1 row per iteration)
     ├── experiments.jsonl       # Fine-grained per-case memory + diagnoses
-    ├── best_versions/          # Snapshots of best skill versions
-    ├── iteration-E1/
-    │   ├── grading.json        # Evaluation results
-    │   └── traces/             # Full execution traces (Meta-Harness)
-    │       ├── case_1.md
-    │       └── case_2.md
+    ├── best_versions/          # Snapshots of best skill versions (top 3)
+    ├── iteration-E*/           # Per-iteration artifacts (meta.json + cases/)
     └── review.html             # HTML eval viewer (if Creator available)
 ```
 
@@ -449,6 +492,9 @@ stuck_threshold: 5
 # Full evolve loop
 python3 scripts/evolve_loop.py <skill-path> --gt <evals.json> --run [--max-iterations N]
 
+# Preview the first-iteration mutation without committing (safe dry-run)
+python3 scripts/evolve_loop.py <skill-path> --gt <evals.json> --dry-run
+
 # Setup only (no loop)
 python3 scripts/evolve_loop.py <skill-path> --gt <evals.json>
 
@@ -460,30 +506,100 @@ python3 scripts/evolve_loop.py <skill-path> --cleanup
 python3 scripts/evolve_loop.py <skill-path> --cleanup-versions
 ```
 
+### Conversation interface (primary mode — no CLI needed)
+
+The CLI is a fallback for unattended / CI runs. The **primary** user
+interface is natural-language requests inside Claude Code (or Codex,
+OpenCode). The skill's `description` field triggers on phrases like:
+
+| User says                                         | What Claude does                  |
+|---|---|
+| "Optimize this skill" or "optimize my skill at X" | Enter evolve mode on that path    |
+| "帮我优化这个 skill" / "帮我优化 xxx skill"        | Enter evolve mode (Chinese)       |
+| "Use skill-evolver to tune `./foo`"               | Enter evolve mode on that path    |
+| "/skill-evolver evolve ./my-skill" or "/evolve"   | Enter evolve mode explicitly      |
+| "Evaluate this skill, don't change anything"      | Run eval mode only                |
+| "Compare `./v1` and `./v2`"                       | Run benchmark mode                |
+| "Show me what the first iteration would change"   | Run evolve with `--dry-run`       |
+
+Claude then executes the 8-Phase loop **directly in the conversation**
+— reading memory, diagnosing failures with Meta-Harness traces,
+making atomic edits with the Edit tool, committing, gating, logging.
+End users never see a CLI command; Claude handles all the mechanics
+internally. See `plugin/skills/skill-evolver/SKILL.md` **How the user
+invokes it** section for the full pattern list.
+
+### Auto-persisting per-case traces (in-conversation mode)
+
+Meta-Harness diagnosis requires per-case JSON files at
+`<workspace>/evolve/iteration-E{N}/cases/case_*.json`. For
+in-conversation callers, `LocalEvaluator.full_eval` accepts an
+optional `cases_dir` kwarg that auto-writes the structured traces so
+the next iteration's Phase 1/2 has evidence to grep/cat without
+calling `persist_cases` separately:
+
+```python
+from evaluators import LocalEvaluator
+from pathlib import Path
+r = LocalEvaluator().full_eval(
+    skill_path,
+    gt_path,
+    split='dev',
+    cases_dir=str(workspace / 'evolve' / f'iteration-E{N}' / 'cases'),
+)
+# case_001.json, case_002.json, ... auto-written to cases_dir
+```
+
 ---
 
 ## Repo Structure
 
 ```
 skill-evolver/
-├── plugin/skills/skill-evolver/    # The actual skill (source of truth)
-│   ├── SKILL.md                    # Main entry point
-│   ├── references/                 # Protocol documents
-│   ├── agents/                     # Agent protocols
-│   └── scripts/                    # Python scripts
-├── examples/hello-skill/           # 5-minute demo
+├── plugin/skills/skill-evolver/       # The actual skill (source of truth)
+│   ├── SKILL.md                       # Main entry point
+│   ├── references/                    # Protocol documents
+│   ├── agents/                        # Agent protocols
+│   └── scripts/                       # 13 single-purpose Python files
+├── examples/hello-skill/              # 5-minute demo
 ├── docs/
-│   ├── architecture.md             # Technical architecture (Chinese)
-│   ├── architecture.en.md          # Technical architecture (English)
-│   └── README_CN.md                # Chinese README
-├── scripts/                        # Build, sync, and install scripts
-│   ├── install.sh                  # Unified installer (--claude/--codex/--opencode/--all)
-│   ├── sync-codex.sh               # Generates .agents/ from plugin/
-│   ├── sync-opencode.sh            # Generates .opencode/ from plugin/
-│   └── sync-all.sh                 # Runs both sync scripts
+│   ├── architecture.md                # Technical architecture (Chinese)
+│   ├── architecture.en.md             # Technical architecture (English)
+│   └── README_CN.md                   # Chinese README
+│   # Note: docs/private/ exists locally (self-iteration reports, presentation
+│   #       drafts, WeChat article drafts) but is gitignored and not shipped.
+├── scripts/                           # Build, sync, and install scripts
+│   ├── install.sh                     # Unified installer (--claude/--codex/--opencode/--all)
+│   ├── sync-codex.sh                  # Generates .agents/ from plugin/
+│   ├── sync-opencode.sh               # Generates .opencode/ from plugin/
+│   └── sync-all.sh                    # Runs both sync scripts
 ├── README.md
-└── LICENSE                         # MIT
+└── LICENSE                            # MIT
 ```
+
+### scripts/ layout (15 single-purpose files)
+
+After the iter-15 through iter-19 refactor, `plugin/skills/skill-evolver/scripts/` is split by concern. Every file owns one thing; `from evolve_loop import X` still works for back-compat via top-level re-exports and PEP 562 `__getattr__`.
+
+| File | Owns |
+|---|---|
+| `evolve_loop.py` | Phase functions 0 / 1 / 4 / 5 / 7 / 8 + git helpers + `persist_cases` / `write_cases_to_dir` + CLI entry (delegates to `orchestrator.main`) |
+| `orchestrator.py` | `run_evolve_loop` (the 8-Phase driver) + `main` (argparse + dispatch) + `_eval_holdout_or_none` |
+| `gate.py` | `phase_6_gate_decision` — pure function, stdlib-only |
+| `llm.py` | `LLM_BACKENDS` registry + `_call_llm` / `_call_llm_http` + `phase_2_3_ideate_and_modify` + `run_l2_eval_via_claude` + `auto_construct_gt` |
+| `cleanup.py` | `_iter_num` + `cleanup_best_versions` + `cleanup_eval_outputs` + `_try_launch_eval_viewer` |
+| `evaluators.py` | `Evaluator` ABC + `LocalEvaluator` + `get_evaluator` factory (lazy-imports backends) + back-compat re-exports |
+| `evaluator_backends.py` | `CreatorEvaluator` + `ScriptEvaluator` + `PytestEvaluator` (lazy-loaded only when config requests them) |
+| `trace_enrichment.py` | Per-assertion rich field helpers: `locate_in_corpus` / `nearest_match` / `check_script_rich` / `check_fact_coverage_rich` / `check_json_schema_rich` |
+| `binary_judge.py` | `BinaryLLMJudge` — atomic YES/NO LLM calls with `judge_with_reasoning` rationale capture |
+| `common.py` | Python version gate + Creator path discovery + `find_workspace` + `parse_skill_md` |
+| `aggregate_results.py` | `parse_results_tsv` + `run_benchmark` A/B + markdown report formatter |
+| `run_l1_gate.py` | L1 quick-gate helper + P0 quality rules (SEC001-006, S003+, TD011, C001, C005) with code-markup stripping |
+| `run_l2_eval.py` | L2 eval library helpers |
+| `setup_workspace.py` | Workspace bootstrap + evolve_plan.md template generation |
+| `__init__.py` | Package marker |
+
+See `plugin/skills/skill-evolver/SKILL.md` **Code Organization** section for the full import-graph and cycle-breaker design (PEP 562 `__getattr__` + lazy factory imports).
 
 ---
 
@@ -491,8 +607,13 @@ skill-evolver/
 
 | Document | Language | Content |
 |---|---|---|
-| [Architecture](docs/architecture.en.md) | English | Full technical design, 4-layer architecture, Creator hard-dependency model |
+| [Architecture](docs/architecture.en.md) | English | Full technical design, 4-layer architecture, Creator hard-dependency model, scripts/ layout |
 | [Architecture](docs/architecture.md) | Chinese | Same content, Chinese version |
+| [README_CN](docs/README_CN.md) | Chinese | Full Chinese README |
+
+> **Private notes**: self-iteration reports, design-decision comparison, presentation drafts,
+> and WeChat article drafts live in `docs/private/` locally. They are `.gitignore`-excluded and
+> not published to GitHub — available on request for collaborators.
 
 ---
 
@@ -526,6 +647,6 @@ skill-evolver/
 
 - **[skill-creator](https://github.com/anthropics/skills/tree/main/skills/skill-creator)** by Anthropic — the evaluation engine. Hard dependency, called by reference, never copied. Creator updates flow into Evolver automatically.
 - **[AutoResearch](https://github.com/uditgoenka/autoresearch)** — Karpathy-inspired autonomous iteration loop that became Evolver's 8-phase outer loop with real keep/discard/revert (not "edit and forget")
-- **[Meta-Harness](https://arxiv.org/abs/2506.xxxxx)** — execution-trace-based active diagnosis. Every iteration must cite specific trace evidence before proposing a change.
+- **Meta-Harness** — execution-trace-based active diagnosis pattern from Meta's agent-optimization work. Every iteration must cite specific trace evidence from `iteration-E{N}/cases/case_*.json` before proposing a change. Auto-persisted by `LocalEvaluator.full_eval(..., cases_dir=...)`.
 - **ServiceClaw QA V2** — "LLM classifies, program scores" evaluation philosophy
 - Built for the [Claude Code](https://claude.com/claude-code) ecosystem

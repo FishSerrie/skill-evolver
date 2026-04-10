@@ -23,19 +23,42 @@ Evaluator Protocol — any evaluator must return this shape:
         "failed": [{"case_id": ..., "assertion": ...}],
         "tokens": int,            # total tokens consumed
         "duration": float,        # wall-clock seconds
-        "traces": {               # full output per case (for Meta-Harness diagnosis)
-            "case_1": "full skill output...",
+        "cases": [                # per-case structured trace (Meta-Harness
+            {                     # aligned: paper §2 "source code + scores +
+                "case_id": 3,     # execution traces" filesystem model)
+                "prompt": "...",
+                "skill_loaded": {"path": "...", "size_bytes": 24331},
+                "assertions": [
+                    {
+                        "index": 0,
+                        "type": "contains",
+                        "value": "...",
+                        "description": "...",
+                        "pass": True,
+                        # type-specific fields populated progressively
+                        # (match.location, nearest_match, stdout/stderr,
+                        #  judge_verdicts[].reasoning — see
+                        #  docs/private/migration-trace-architecture.md)
+                    },
+                    ...
+                ],
+                "summary": {"total_assertions": 3, "passed": 1, "failed": 2,
+                            "failed_indexes": [1, 2]},
+            },
             ...
-        },
+        ],
     }
+
+Reference: Lee et al. 2026, "Meta-Harness: End-to-End Optimization of Model
+Harnesses", arXiv 2603.28052. The paper's proposer reads a median of 82
+files/iteration via grep/cat; our per-case JSON layout under
+iteration-E{N}/cases/ matches that access pattern.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import re
-import subprocess
 import sys
 import time
 from abc import ABC, abstractmethod
@@ -45,130 +68,36 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).parent))
 from common import require_creator, find_creator_path, validate_frontmatter
 
+# Re-exported for back-compat so ``from evaluators import BinaryLLMJudge``
+# and ``from evaluators import basic_schema_check`` keep working after
+# the 2026-04-09 slim split. External callers don't need to know where
+# these symbols physically live.
+from binary_judge import BinaryLLMJudge
+from trace_enrichment import (
+    build_skill_snapshot,
+    check_fact_coverage_rich,
+    check_json_schema_rich,
+    check_script_rich,
+    excerpt,
+    locate_in_corpus,
+    nearest_match,
+    basic_schema_check,
+    basic_schema_check_with_path,
+)
+
+# Back-compat alias: the old underscored module-level helper name is
+# still accepted so older external callers (if any) keep working.
+# New code should use ``basic_schema_check`` / ``basic_schema_check_with_path``
+# imported from ``trace_enrichment`` (or the re-exports above).
+_basic_schema_check = basic_schema_check
+_basic_schema_check_with_path = basic_schema_check_with_path
+
 
 # ─────────────────────────────────────────────
-# BinaryLLMJudge — atomic YES/NO LLM calls
+# BinaryLLMJudge lives in ``binary_judge.py`` (extracted 2026-04-09).
+# Re-exported at the top of this file so ``from evaluators import
+# BinaryLLMJudge`` keeps working for every existing caller.
 # ─────────────────────────────────────────────
-
-class BinaryLLMJudge:
-    """Makes atomic binary (YES/NO) calls to an LLM.
-
-    Core principle: LLM only classifies, never scores.
-    Each call asks exactly one question with a YES or NO answer.
-    Programs aggregate the binary results into scores.
-
-    Uses the pluggable backend system from evolve_loop.py — supports
-    claude, codex, opencode, and HTTP endpoints. Auto-detects the
-    available backend, or respects LLM_BACKEND env var.
-    """
-
-    def __init__(self, model: str | None = None, timeout: int = 60):
-        self.model = model
-        self.timeout = timeout
-        self.total_tokens = 0
-        self.total_duration = 0.0
-        self._call_llm = None  # lazy import to avoid circular dependency
-
-    def _get_llm_caller(self):
-        """Lazy import of _call_llm from llm module to avoid circular imports.
-
-        Falls back to a self-contained CLI-detecting implementation if
-        scripts/llm.py isn't importable (standalone copies of this file).
-        """
-        if self._call_llm is None:
-            try:
-                from llm import _call_llm
-                self._call_llm = _call_llm
-            except ImportError:
-                # Fallback: inline implementation for standalone use
-                self._call_llm = self._fallback_call_llm
-        return self._call_llm
-
-    def _fallback_call_llm(self, prompt: str, model: str | None = None,
-                           timeout: int = 120, backend: str | None = None) -> str:
-        """Fallback LLM caller when evolve_loop is not importable.
-        Auto-detects available CLI (claude > codex > opencode)."""
-        for cli in ["claude", "codex", "opencode"]:
-            cmd = [cli]
-            if cli == "claude":
-                cmd.extend(["-p", prompt, "--output-format", "text"])
-            elif cli == "codex":
-                cmd.extend(["-q", prompt])
-            else:
-                cmd.extend(["run", prompt])
-            if model:
-                cmd.extend(["--model", model])
-            env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-            try:
-                result = subprocess.run(
-                    cmd, capture_output=True, text=True,
-                    timeout=timeout, env=env)
-                return result.stdout.strip()
-            except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-                continue
-        return "[ERROR: No LLM CLI found — install claude, codex, or opencode]"
-
-    def judge(self, question: str, context: str) -> bool:
-        """Ask the LLM a single binary question about the context.
-
-        Args:
-            question: A yes/no question (e.g., "Does this text mention X?")
-            context: The text to evaluate against.
-
-        Returns:
-            True if YES, False if NO or unavailable.
-        """
-        prompt = (
-            f"You are a binary classifier. Answer ONLY with YES or NO.\n\n"
-            f"Context:\n{context[:8000]}\n\n"
-            f"Question: {question}\n\n"
-            f"Answer (YES or NO):"
-        )
-
-        call_llm = self._get_llm_caller()
-        t0 = time.time()
-        try:
-            output = call_llm(prompt, model=self.model, timeout=self.timeout)
-            duration = time.time() - t0
-            self.total_duration += duration
-            self.total_tokens += max(len(prompt) // 4, 1)
-
-            output = output.strip().upper()
-            # Parse YES/NO from output — handle variations
-            last_line = output.split("\n")[-1] if output else ""
-            if "YES" in last_line:
-                return True
-            if "NO" in last_line:
-                return False
-            return "YES" in output and "NO" not in output
-
-        except Exception as e:
-            # Log the failure instead of silently returning False. A bare
-            # except here used to make LLM-backend crashes (HTTP 500, bad
-            # JSON, timeout, credential error) indistinguishable from a
-            # legitimate "NO" answer, which poisoned Phase 2 diagnosis.
-            self.total_duration += time.time() - t0
-            print(
-                f"[warn] BinaryLLMJudge.judge failed: {type(e).__name__}: {e}",
-                file=sys.stderr,
-            )
-            return False
-
-    def judge_batch(self, questions: list[tuple[str, str]]) -> list[bool]:
-        """Judge multiple questions sequentially.
-
-        Args:
-            questions: List of (question, context) tuples.
-
-        Returns:
-            List of boolean results.
-        """
-        return [self.judge(q, c) for q, c in questions]
-
-    def reset_stats(self):
-        """Reset accumulated token and duration counters."""
-        self.total_tokens = 0
-        self.total_duration = 0.0
 
 
 # ─────────────────────────────────────────────
@@ -232,6 +161,11 @@ class LocalEvaluator(Evaluator):
         that scores only SKILL.md misses content that legitimately lives
         in references/ and agents/. This mirrors dev/run_loop.py's
         build_corpus() so local eval reflects real Claude behavior.
+
+        Note: the ``### <rel-path> ###`` header format matters — it's
+        what :func:`trace_enrichment.locate_in_corpus` uses to map
+        char offsets back to ``{file, line}`` pointers for the trace
+        enrichment.
         """
         parts = []
         skill_md = skill_path / "SKILL.md"
@@ -247,46 +181,111 @@ class LocalEvaluator(Evaluator):
         return "\n\n".join(parts)
 
     def full_eval(self, skill_path: Path, gt_path: Path,
-                  split: str = "dev") -> dict:
+                  split: str = "dev",
+                  cases_dir: Path | None = None) -> dict:
+        """Run full eval against GT assertions.
+
+        Args:
+            skill_path: the skill to evaluate.
+            gt_path: the GT evals.json file.
+            split: which GT split to run (``dev`` / ``holdout`` / ``regression``).
+            cases_dir: optional directory to auto-persist per-case JSON
+                files (``case_{id}.json`` under this dir). When set, the
+                returned ``cases`` list is ALSO written to disk so
+                in-conversation callers don't have to remember to call
+                ``persist_cases`` separately — essential for the next
+                iteration's Phase 1 / Phase 2 Meta-Harness diagnosis,
+                which reads these files via grep/cat. The conventional
+                path is ``<workspace>/evolve/iteration-E{N}/cases``.
+
+        Reference: paper §2 filesystem layout. Each case gets its own
+        structured JSON file so the proposer can grep across iterations
+        (``grep -l '"pass": false' iteration-E*/cases/*.json``).
+        """
         t0 = time.time()
         skill_content = self._load_skill_corpus(skill_path)
+        # Rich skill snapshot (paper §3 "state updates" trace component).
+        # Computed once per full_eval since it doesn't change across
+        # cases in the same run. Delegates to trace_enrichment module.
+        skill_snapshot = build_skill_snapshot(skill_path)
         data = json.loads(gt_path.read_text())
 
-        cases = data if isinstance(data, list) else data.get("evals", [])
+        raw_cases = data if isinstance(data, list) else data.get("evals", [])
         if split:
-            cases = [c for c in cases if c.get("split", "dev") == split]
+            raw_cases = [c for c in raw_cases if c.get("split", "dev") == split]
 
         total_p = total_t = 0
         failed = []
-        traces = {}
+        cases = []
 
-        for c in cases:
+        for c in raw_cases:
             case_id = c.get("id", "?")
-            # Build trace: record what was evaluated and how
-            case_trace_lines = [f"Case {case_id}: {c.get('prompt', '')}\n"]
+            case_prompt = c.get("prompt", "")
+            case_assertions = []
+            case_passed = 0
+            case_failed_indexes = []
 
-            for a in c.get("assertions", []):
+            for idx, a in enumerate(c.get("assertions", [])):
                 total_t += 1
                 atype = a.get("type", "contains")
                 val = a.get("value", "")
                 desc = a.get("description", val)
 
-                ok = self._evaluate_assertion(
+                result = self._evaluate_assertion(
                     atype, val, a, skill_content, skill_path)
+                ok = bool(result.get("pass", False))
 
-                case_trace_lines.append(
-                    f"  [{atype}] {'PASS' if ok else 'FAIL'}: {desc}")
+                # Merge type-specific rich fields (match.location,
+                # nearest_match, stdout/stderr, judge_reasoning, etc.)
+                # into the assertion record so the proposer can diagnose
+                # without re-running the evaluator. This is the paper
+                # §3 alignment — each assertion carries its own trace
+                # components.
+                assertion_record = {
+                    "index": idx,
+                    "type": atype,
+                    "value": val,
+                    "description": desc,
+                    "pass": ok,
+                }
+                for k, v in result.items():
+                    if k == "pass":
+                        continue
+                    assertion_record[k] = v
+                case_assertions.append(assertion_record)
 
                 if ok:
                     total_p += 1
+                    case_passed += 1
                 else:
+                    case_failed_indexes.append(idx)
                     failed.append({
                         "case_id": case_id,
                         "assertion": desc,
                         "type": atype,
                     })
 
-            traces[str(case_id)] = "\n".join(case_trace_lines)
+            case_total = len(case_assertions)
+            cases.append({
+                "case_id": case_id,
+                "split": c.get("split", "dev"),
+                "prompt": case_prompt,
+                "skill_loaded": skill_snapshot,
+                "assertions": case_assertions,
+                "summary": {
+                    "total_assertions": case_total,
+                    "passed": case_passed,
+                    "failed": case_total - case_passed,
+                    "failed_indexes": case_failed_indexes,
+                },
+            })
+
+        # Auto-persist cases when an explicit directory is requested.
+        # Lazy-import to avoid a top-level cycle with evolve_loop (which
+        # already imports from this module).
+        if cases_dir is not None and cases:
+            from evolve_loop import write_cases_to_dir
+            write_cases_to_dir(Path(cases_dir), cases)
 
         duration = time.time() - t0
         judge = self._llm_judge
@@ -299,179 +298,126 @@ class LocalEvaluator(Evaluator):
             "failed": failed,
             "tokens": tokens,
             "duration": round(duration, 2),
-            "traces": traces,
+            "cases": cases,
         }
 
+    # ─────────────────────────────────────────
+    # Trace-enrichment helpers live in ``trace_enrichment.py``
+    # (paper §3 four components: prompts, tool calls, model outputs,
+    # state updates). The dispatcher below calls those module
+    # functions directly — the old instance methods are gone.
+    # ─────────────────────────────────────────
+
     def _evaluate_assertion(self, atype: str, val: str, assertion: dict,
-                            content: str, skill_path: Path) -> bool:
-        """Evaluate a single assertion. Deterministic types use program logic;
-        semantic types use BinaryLLMJudge for YES/NO classification."""
+                            content: str, skill_path: Path) -> dict:
+        """Evaluate a single assertion and return a structured result dict.
+
+        The returned dict always has a ``pass`` boolean. Type-specific
+        extras populate the Meta-Harness paper §3 trace components
+        (prompts / tool calls / model outputs / state updates) so the
+        proposer can diagnose WHY each assertion failed, not just THAT
+        it did.
+
+        Extras by type:
+          - contains / regex  pass  → ``match: {file, line, excerpt}``
+          - contains          fail  → ``nearest_match: {...} | None``
+          - not_contains      fail  → ``found_at: {file, line, excerpt}``
+          - script_check      both  → ``exit_code, stdout, stderr, duration_ms, resolved_path``
+          - path_hit          both  → ``judge_reasoning: str``
+          - fact_coverage     preset→ ``judge_verdicts: [{fact, verdict, reasoning}, ...], passed_facts, total_facts``
+          - fact_coverage     online→ ``keyword_hits, keyword_total``
+        """
 
         # --- Program-only assertions (deterministic) ---
+        # All rich helpers (locate_in_corpus / excerpt / nearest_match /
+        # check_script_rich / check_json_schema_rich) come from the
+        # trace_enrichment module — they're pure functions, no self
+        # state needed.
 
         if atype == "contains":
-            return val.lower() in content.lower()
+            idx = content.lower().find(val.lower())
+            if idx >= 0:
+                return {
+                    "pass": True,
+                    "match": {
+                        **locate_in_corpus(content, idx),
+                        "excerpt": excerpt(content, idx, idx + len(val)),
+                    },
+                }
+            return {"pass": False, "nearest_match": nearest_match(content, val)}
 
         if atype == "not_contains":
-            return val.lower() not in content.lower()
+            idx = content.lower().find(val.lower())
+            if idx < 0:
+                return {"pass": True}
+            return {
+                "pass": False,
+                "found_at": {
+                    **locate_in_corpus(content, idx),
+                    "excerpt": excerpt(content, idx, idx + len(val)),
+                },
+            }
 
         if atype == "regex":
-            return bool(re.search(val, content))
+            try:
+                m = re.search(val, content)
+            except re.error as e:
+                return {"pass": False, "regex_error": str(e)}
+            if m:
+                return {
+                    "pass": True,
+                    "match": {
+                        **locate_in_corpus(content, m.start()),
+                        "text": m.group(0)[:200],
+                        "excerpt": excerpt(content, m.start(), m.end()),
+                    },
+                }
+            return {"pass": False, "nearest_match": None}
 
         if atype == "file_exists":
-            return (skill_path / val).exists() if val else False
+            ok = bool(val) and (skill_path / val).exists()
+            out = {"pass": ok}
+            if not ok and val:
+                out["expected_path"] = str(skill_path / val)
+            return out
 
         if atype == "json_schema":
-            return self._check_json_schema(val, content)
+            return check_json_schema_rich(val, content)
 
         if atype == "script_check":
-            return self._check_script(val, content, skill_path)
+            return check_script_rich(val, content, skill_path)
 
         # --- LLM binary assertions (semantic, YES/NO only) ---
 
         if atype == "path_hit":
             judge = self._get_judge()
-            return judge.judge(
+            verdict, reasoning = judge.judge_with_reasoning(
                 f"Does this text reference or mention the path '{val}'?",
-                content)
+                content,
+            )
+            return {"pass": verdict, "judge_reasoning": reasoning}
 
         if atype == "fact_coverage":
-            return self._check_fact_coverage(val, assertion, content)
+            # Pass the judge instance explicitly — keeps the
+            # trace_enrichment function pure / free of class coupling.
+            return check_fact_coverage_rich(
+                val, assertion, content, self._get_judge())
 
-        # Unknown assertion type — fail explicitly (don't silently pass)
-        return False
-
-    def _check_json_schema(self, schema_str: str, content: str) -> bool:
-        """Validate content against a JSON schema (program-only)."""
-        try:
-            schema = json.loads(schema_str)
-            # Extract JSON from content (try ```json blocks first, then raw)
-            json_match = re.search(
-                r'```json\s*\n(.*?)\n```', content, re.DOTALL)
-            if json_match:
-                data = json.loads(json_match.group(1))
-            else:
-                data = json.loads(content)
-            # Basic validation: check required keys and types
-            return _basic_schema_check(data, schema)
-        except (json.JSONDecodeError, KeyError, TypeError):
-            return False
-
-    def _check_script(self, script_path: str, content: str,
-                      skill_path: Path) -> bool:
-        """Run an external script and use its exit code as pass/fail.
-
-        Script path resolution order:
-          1. Absolute path → used as-is.
-          2. Workspace-relative → ``<skill-parent>/<skill-name>-workspace/<script_path>``
-             for standalone skills, or ``<repo-root-parent>/<skill-name>-workspace/<script_path>``
-             for plugin-hosted skills (mirrors ``find_workspace``).
-             **Preferred location**: eval-harness check scripts belong in the
-             workspace (a gitignored, per-user artifact), not inside the
-             shipped skill body.
-          3. Skill-relative → ``skill_path/<script_path>`` (legacy fallback
-             for older GT files that still point inside the skill).
-
-        The script runs with ``cwd=skill_path``, so ``Path.cwd()`` inside the
-        script resolves to the skill root regardless of where the script
-        file physically lives.
-        """
-        from common import find_workspace  # local import to avoid cycles
-
-        p = Path(script_path)
-        if p.is_absolute():
-            resolved: Path | None = p if p.exists() else None
-        else:
-            # Resolve skill_path first — Path('.').name == '' would otherwise
-            # produce a bogus workspace path.
-            skill_root = skill_path.resolve()
-            workspace = find_workspace(skill_root)
-            workspace_candidate = workspace / script_path
-            skill_candidate = skill_root / script_path
-            if workspace_candidate.exists():
-                resolved = workspace_candidate
-            elif skill_candidate.exists():
-                resolved = skill_candidate
-            else:
-                resolved = None
-
-        if resolved is None:
-            return False
-
-        try:
-            result = subprocess.run(
-                [sys.executable, str(resolved)],
-                input=content, capture_output=True, text=True,
-                timeout=30, cwd=str(skill_path),
-            )
-            return result.returncode == 0
-        except (subprocess.TimeoutExpired, OSError):
-            return False
-
-    def _check_fact_coverage(self, val: str, assertion: dict,
-                             content: str) -> bool:
-        """Check fact coverage using binary LLM judgment per fact point.
-
-        Two modes:
-          Preset: assertion has 'facts' array → LLM binary per fact
-          Online: no 'facts' → keyword matching against val
-        """
-        facts = assertion.get("facts")
-
-        if facts and isinstance(facts, list):
-            # Preset mode: LLM binary judgment per fact
-            judge = self._get_judge()
-            covered = 0
-            for fact in facts:
-                if judge.judge(
-                    f"Does this text cover or address the following fact: '{fact}'?",
-                    content
-                ):
-                    covered += 1
-            # Pass if ≥80% of facts are covered
-            return (covered / len(facts)) >= 0.8 if facts else True
-        else:
-            # Online mode (no preset facts): keyword matching
-            # Split val into keywords and check coverage
-            keywords = [k.strip() for k in val.split(",") if k.strip()]
-            if not keywords:
-                return True
-            hits = sum(1 for k in keywords if k.lower() in content.lower())
-            return (hits / len(keywords)) >= 0.8
+        # Unknown assertion type — fail explicitly (don't silently pass).
+        return {"pass": False, "error": f"unknown assertion type: {atype}"}
 
 
-def _basic_schema_check(data: Any, schema: dict) -> bool:
-    """Lightweight JSON schema validation without jsonschema dependency."""
-    stype = schema.get("type")
-    if stype == "object":
-        if not isinstance(data, dict):
-            return False
-        for req in schema.get("required", []):
-            if req not in data:
-                return False
-        props = schema.get("properties", {})
-        for key, prop_schema in props.items():
-            if key in data:
-                if not _basic_schema_check(data[key], prop_schema):
-                    return False
-        return True
-    if stype == "array":
-        if not isinstance(data, list):
-            return False
-        items_schema = schema.get("items")
-        if items_schema:
-            return all(_basic_schema_check(item, items_schema)
-                       for item in data)
-        return True
-    if stype == "string":
-        return isinstance(data, str)
-    if stype == "number":
-        return isinstance(data, (int, float))
-    if stype == "integer":
-        return isinstance(data, int)
-    if stype == "boolean":
-        return isinstance(data, bool)
-    return True  # no type constraint
+# ─────────────────────────────────────────────
+# The rich-helper methods that used to live in LocalEvaluator
+# (_check_json_schema_rich, _check_json_schema, _check_script_rich,
+# _check_fact_coverage_rich) were extracted to
+# ``scripts/trace_enrichment.py`` on 2026-04-09 as pure module
+# functions (check_json_schema_rich, check_script_rich,
+# check_fact_coverage_rich). The schema validation helpers
+# (_basic_schema_check, _basic_schema_check_with_path) are also there
+# as ``basic_schema_check`` and ``basic_schema_check_with_path``.
+# Re-exported at the top of this file for back-compat.
+# ─────────────────────────────────────────────
 
 
 # ─────────────────────────────────────────────

@@ -71,10 +71,13 @@ class CreatorEvaluator(Evaluator):
         return self._fallback.quick_gate(skill_path, gt_path)
 
     def full_eval(self, skill_path: Path, gt_path: Path,
-                  split: str = "dev") -> dict:
+                  split: str = "dev",
+                  cases_dir: Path | None = None) -> dict:
         # CreatorEvaluator uses the same binary approach as LocalEvaluator
-        # but can additionally invoke Creator's scripts for trigger testing
-        result = self._fallback.full_eval(skill_path, gt_path, split)
+        # but can additionally invoke Creator's scripts for trigger testing.
+        # Forward cases_dir so auto-persistence reaches the delegate.
+        result = self._fallback.full_eval(
+            skill_path, gt_path, split, cases_dir=cases_dir)
 
         # Try to enhance with Creator's trigger evaluation if available
         if self.creator_path:

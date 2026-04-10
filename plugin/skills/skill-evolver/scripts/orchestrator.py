@@ -46,7 +46,7 @@ from cleanup import (
 from evolve_loop import (  # phase definitions live in evolve_loop.py
     phase_0_setup, phase_1_review, phase_4_commit,
     phase_7_log, phase_8_loop_control,
-    git_revert_last, save_best_version,
+    git_revert_last, save_best_version, _list_untracked,
 )
 
 
@@ -134,6 +134,22 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
     log("Phase 0: Baseline eval")
     baseline = evaluator.full_eval(skill_path, gt_path)
     baseline_rate = baseline["pass_rate"]
+    # Red-team finding #7 (iter 30): reject empty dev split. With zero
+    # assertions, pass_rate collapses to 0.0 (the `if total_t else 0`
+    # guard in LocalEvaluator), giving the gate no signal at all and
+    # confusing the user as to why no iterations ever improve. An
+    # empty dev GT is a data-prep error, not a valid loop state.
+    if baseline.get("total_assertions", 0) == 0:
+        msg = (
+            f"Phase 0 baseline: GT at {gt_path} has 0 assertions in the "
+            f"dev split. The evolve loop needs at least one scoreable "
+            f"case to produce a signal for the Phase 6 gate. Add at "
+            f"least one dev case to evals.json (see references/"
+            f"eval_strategy.md for templates) or pass a different GT "
+            f"via --gt."
+        )
+        log(f"ABORT: {msg}")
+        return {"success": False, "error": msg}
     baseline_holdout = _eval_holdout_or_none(evaluator, skill_path, gt_path)
     log(f"Baseline: {baseline['total_passed']}/{baseline['total_assertions']} = {baseline_rate:.0%}"
         + (f" | holdout {baseline_holdout:.0%}" if baseline_holdout is not None else " | holdout n/a"))
@@ -158,6 +174,14 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
         review = phase_1_review(workspace, skill_path)
         log(f"  {review['iterations']} iters, {review['keeps']} keeps, stuck={review['stuck']}")
 
+        # Snapshot untracked files BEFORE phase_2_3 so we can diff
+        # after the mutation runs and pass the resulting new_files list
+        # to phase_4_commit. This lets Layer 3 mutations add new files
+        # (iter 25 / #1) without re-opening iter 8's `git add -A`
+        # footgun — only the files the mutation actually created are
+        # staged, any user-dropped debris is ignored.
+        untracked_before = _list_untracked(skill_path)
+
         # Phase 2+3: Ideate and Modify (via claude -p)
         log("Phase 2+3: Ideate and Modify (calling claude -p)")
         result_23 = phase_2_3_ideate_and_modify(
@@ -170,6 +194,14 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
                         1.0, 0, "pass", "exhausted", current_layer, "no improvement found")
             break
 
+        # Compute mutation-added new files (iter 25). Empty set if the
+        # mutation only edited tracked files, which is the common case.
+        untracked_after = _list_untracked(skill_path)
+        new_files = sorted(untracked_after - untracked_before)
+        if new_files:
+            log(f"  Phase 2+3 added {len(new_files)} new file(s): {', '.join(new_files[:5])}"
+                + (f" (+{len(new_files) - 5} more)" if len(new_files) > 5 else ""))
+
         # Dry-run: stop here, before Phase 4 commits anything. Revert
         # the mutation first so the working tree matches what Phase 0
         # started with. The loop returns the proposed change so the
@@ -180,18 +212,29 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
                 ["git", "checkout", "--", "."], cwd=str(skill_path),
                 capture_output=True, text=True, timeout=10,
             )
+            # Also remove the mutation-added untracked files so the
+            # tree matches the pre-iteration state exactly.
+            for nf in new_files:
+                try:
+                    (skill_path / nf).unlink(missing_ok=True)
+                except OSError:
+                    pass
             return {
                 "success": True,
                 "dry_run": True,
                 "baseline_pass_rate": baseline_rate,
                 "proposed_mutation": result_23,
+                "proposed_new_files": new_files,
                 "best_metric": best_rate,
                 "iterations_run": 1,
             }
 
-        # Phase 4: Commit
+        # Phase 4: Commit — pass mutation-added new files explicitly
         log("Phase 4: Commit")
-        commit = phase_4_commit(skill_path, current_layer, result_23["description"])
+        commit = phase_4_commit(
+            skill_path, current_layer, result_23["description"],
+            new_files=new_files,
+        )
         if not commit["success"]:
             log(f"  Commit failed: {commit.get('error')}")
             continue
@@ -202,7 +245,23 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
         l1 = evaluator.quick_gate(skill_path, gt_path)
         log(f"  L1: {'PASS' if l1['pass'] else 'FAIL'}")
         if not l1["pass"]:
-            git_revert_last(skill_path)
+            # Red-team finding #8 (iter 30): check revert actually
+            # succeeded. If git revert fails (merge conflict, detached
+            # HEAD, hook veto, etc.) and we keep iterating, the broken
+            # mutation contaminates the next iteration's baseline and
+            # the entire run becomes unreliable. Abort instead.
+            revert = git_revert_last(skill_path)
+            if not revert.get("success"):
+                msg = (
+                    f"L1 fail at iter {iteration}; git revert ALSO failed "
+                    f"({revert.get('output', 'no output')}). Working tree "
+                    f"is in an undefined state. Aborting loop."
+                )
+                log(f"  ABORT: {msg}")
+                phase_7_log(workspace, iteration, commit["commit_hash"], 0, -(best_rate*100),
+                            1.0, 0, "fail", "crash", current_layer, msg)
+                return {"success": False, "error": msg,
+                        "baseline_rate": baseline_rate, "best_rate": best_rate}
             phase_7_log(workspace, iteration, commit["commit_hash"], 0, -(best_rate*100),
                         1.0, 0, "fail", "discard", current_layer,
                         f"L1 fail: {result_23['description']}")
@@ -246,10 +305,31 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
             log(f"  KEEP — new best: dev {best_rate:.0%}"
                 + (f", holdout {best_holdout:.0%}" if best_holdout is not None else ""))
         else:
-            git_revert_last(skill_path)
+            # Red-team finding #8 (iter 30): same safety check as the
+            # L1-fail branch above — a failed revert means the mutation
+            # is still in the working tree and subsequent iterations
+            # would build on corrupt state. Abort the loop cleanly
+            # instead of pretending the revert succeeded.
+            revert = git_revert_last(skill_path)
+            if not revert.get("success"):
+                msg = (
+                    f"Gate decision={decision} at iter {iteration}; "
+                    f"git revert ALSO failed ({revert.get('output', 'no output')}). "
+                    f"Working tree is in an undefined state. Aborting loop."
+                )
+                log(f"  ABORT: {msg}")
+                phase_7_log(workspace, iteration, commit["commit_hash"],
+                            new_rate * 100, delta * 100,
+                            1.0, new_eval.get("tokens", 0), "fail", "crash",
+                            current_layer, msg)
+                return {"success": False, "error": msg,
+                        "baseline_rate": baseline_rate, "best_rate": best_rate}
             log(f"  {decision.upper()} — reverted")
 
-        # Phase 7: Log (with traces for Meta-Harness active diagnosis)
+        # Phase 7: Log (writes results.tsv + experiments.jsonl +
+        # iteration-E{N}/meta.json + iteration-E{N}/cases/case_{id}.json
+        # — the full paper §2 filesystem layout for next-iter Phase 1
+        # grep/cat access)
         elapsed = time.time() - t0
         phase_7_log(workspace, iteration, commit["commit_hash"],
                     new_rate * 100, delta * 100,
@@ -266,7 +346,8 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
                         "duration": new_eval.get("duration", 0.0),
                         "diagnosis": result_23.get("diagnosis", ""),
                     },
-                    traces=new_eval.get("traces"))
+                    eval_result=new_eval,
+                    split="dev")
         log(f"  Logged ({elapsed:.1f}s)")
 
         # Phase 8: Loop control

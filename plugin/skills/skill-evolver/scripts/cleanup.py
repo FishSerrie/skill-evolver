@@ -101,8 +101,14 @@ def cleanup_eval_outputs(workspace: Path, keep_recent: int = 5) -> list[str]:
 def _try_launch_eval_viewer(workspace: Path, skill_path: Path) -> bool:
     """Try to launch Creator's eval viewer (generate_review.py) if available.
 
-    Generates a static HTML review of the evolution results.
-    Returns True if viewer was launched successfully.
+    Generates a static HTML review of the evolution results from the
+    most recent iteration's meta.json. Returns True if viewer was
+    launched successfully.
+
+    Post Meta-Harness migration (docs/private/migration-trace-architecture.md):
+    the per-iteration metadata now lives in ``iteration-E{N}/meta.json``
+    instead of ``benchmark.json``. The viewer script receives meta.json
+    via the ``--benchmark`` flag for backward CLI compatibility.
     """
     creator_path = require_creator()
 
@@ -116,19 +122,19 @@ def _try_launch_eval_viewer(workspace: Path, skill_path: Path) -> bool:
     except (ValueError, FileNotFoundError):
         name = skill_path.name
 
-    # Find the latest benchmark file. Sort numerically by iteration so
-    # iteration-E10 ranks after iteration-E9 (lex sort would render the
-    # stale E9 benchmark as "latest" once the run hits 10+ iterations).
+    # Find the latest meta.json. Sort numerically by iteration so
+    # iteration-E10 ranks after iteration-E9 (lex sort would render
+    # the stale E9 meta as "latest" once the run hits 10+ iterations).
     evolve_dir = workspace / "evolve"
-    benchmark_path = None
+    meta_path = None
     iter_dirs = [
         d for d in evolve_dir.iterdir()
         if d.is_dir() and d.name.startswith("iteration-E")
     ]
     for d in sorted(iter_dirs, key=lambda p: _iter_num(p.name), reverse=True):
-        bp = d / "benchmark.json"
-        if bp.exists():
-            benchmark_path = bp
+        mp = d / "meta.json"
+        if mp.exists():
+            meta_path = mp
             break
 
     try:
@@ -138,8 +144,8 @@ def _try_launch_eval_viewer(workspace: Path, skill_path: Path) -> bool:
             "--skill-name", name,
             "--static", str(workspace / "evolve" / "review.html"),
         ]
-        if benchmark_path:
-            cmd.extend(["--benchmark", str(benchmark_path)])
+        if meta_path:
+            cmd.extend(["--benchmark", str(meta_path)])
 
         result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=30)
