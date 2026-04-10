@@ -213,10 +213,13 @@ assertions are the training itself** (iterative optimization toward a target).
 block. This matches the skill-qa-workflow P0 (hard block) vs P1/P2
 (advisory) distinction.
 
-**Scanning scope**: `.md` files get full rule set with code-fence stripping
-(prevents false positives on documented anti-patterns). `.py`/`.sh` files
-only scanned for secrets (SEC003) — other rules would false-positive on the
-evaluation framework's own regex patterns and subprocess calls.
+**Scanning scope**: `.md` files get full rule set with code-markup stripping
+— both triple-backtick fences and inline backtick spans are removed before
+scanning (prevents false positives on documented anti-patterns in rule
+tables — e.g. the SEC001/SEC003 examples above would otherwise trigger
+the scanner on this very file). `.py`/`.sh` files only scanned for
+secrets (SEC003) — other rules would false-positive on the evaluation
+framework's own regex patterns and subprocess calls.
 
 ---
 

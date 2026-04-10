@@ -242,14 +242,20 @@ def _collect_skill_files(skill_path: Path) -> list[tuple[str, str]]:
 
 
 def _strip_code_fences(text: str) -> str:
-    """Remove content inside markdown code fences (triple-backtick).
+    """Remove content inside markdown code markup (fences + inline).
 
-    Security regex checks on .md files should skip code blocks so
-    documented anti-patterns like 'Do NOT use `eval()`' don't trigger
-    false positives. The fenced content is replaced with empty strings
-    to preserve line count for location tracking.
+    Security regex checks on .md files should skip code blocks AND
+    inline backtick spans so documented anti-patterns like
+    'No `rm -rf /`' or 'No `password=literal`' don't trigger false
+    positives. Fenced content is replaced with empty strings to
+    preserve line count for location tracking; inline spans are
+    replaced with empty strings.
     """
-    return re.sub(r"```[\s\S]*?```", "", text)
+    # Strip triple-backtick code blocks first (greedy over newlines)
+    text = re.sub(r"```[\s\S]*?```", "", text)
+    # Strip inline backtick spans (single backtick pairs)
+    text = re.sub(r"`[^`\n]+`", "", text)
+    return text
 
 
 def _scan_patterns(text: str, patterns: list[tuple[str, str]],
