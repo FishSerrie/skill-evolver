@@ -24,8 +24,8 @@ sed \
   -e 's/# Skill Evolver/# Skill Evolver (Codex)/' \
   -e 's|/skill-evolver |\$skill-evolver |g' \
   -e 's|`AskUserQuestion`|direct prompting|g' \
-  -e 's|`claude -p`|the Codex CLI|g' \
-  -e 's|claude -p |codex -q |g' \
+  -e 's|`claude -p`|`codex exec`|g' \
+  -e 's|claude -p |codex exec |g' \
   -e 's|通过 claude -p 子进程|通过 Codex CLI 子进程|g' \
   -e 's|claude CLI|Codex CLI|g' \
   "$SRC/SKILL.md" > "$DST/SKILL.md"
@@ -40,8 +40,9 @@ cp "$SRC/references/"*.md "$DST/references/"
 for f in "$SRC/scripts/"*.py; do
   fname="$(basename "$f")"
   sed \
-    -e 's|"claude", "-p"|"codex", "-q"|g' \
-    -e 's|claude -p|codex -q|g' \
+    -e 's|"claude", "-p", "{prompt}", "--output-format", "text"|"codex", "exec", "--skip-git-repo-check", "-o", "{output_path}", "-"|g' \
+    -e 's|`claude -p`|`codex exec`|g' \
+    -e 's|claude -p|codex exec|g' \
     -e 's|claude CLI|Codex CLI|g' \
     "$f" > "$DST/scripts/$fname"
 done

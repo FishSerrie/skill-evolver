@@ -31,6 +31,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tempfile
 import time
 
 
@@ -74,10 +75,21 @@ class BinaryLLMJudge:
         Auto-detects available CLI (claude > codex > opencode)."""
         for cli in ["claude", "codex", "opencode"]:
             cmd = [cli]
+            output_path = None
+            prompt_input = None
             if cli == "claude":
                 cmd.extend(["-p", prompt, "--output-format", "text"])
             elif cli == "codex":
-                cmd.extend(["-q", prompt])
+                tmp = tempfile.NamedTemporaryFile(
+                    prefix="skill-evolver-codex-",
+                    suffix=".txt",
+                    delete=False,
+                )
+                output_path = tmp.name
+                tmp.close()
+                cmd.extend(["exec", "--skip-git-repo-check",
+                            "-o", output_path, "-"])
+                prompt_input = prompt
             else:
                 cmd.extend(["run", prompt])
             if model:
@@ -86,10 +98,23 @@ class BinaryLLMJudge:
             try:
                 result = subprocess.run(
                     cmd, capture_output=True, text=True,
-                    timeout=timeout, env=env)
+                    timeout=timeout, env=env, input=prompt_input)
+                if result.returncode != 0:
+                    continue
+                if output_path and os.path.exists(output_path):
+                    with open(output_path, "r", encoding="utf-8") as fh:
+                        text = fh.read().strip()
+                    if text:
+                        return text
                 return result.stdout.strip()
             except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
                 continue
+            finally:
+                if output_path:
+                    try:
+                        os.unlink(output_path)
+                    except OSError:
+                        pass
         return "[ERROR: No LLM CLI found — install claude, codex, or opencode]"
 
     def judge(self, question: str, context: str) -> bool:

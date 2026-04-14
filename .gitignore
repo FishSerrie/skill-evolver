@@ -22,3 +22,4 @@ evolve-workspace
 # self-iteration reports、design comparison notes、以及其它只给作者本人
 # 或线下汇报/路演/文章用的材料。Public docs stay in docs/ at the top level.
 docs/private/
+plugin/skills/skill-evolver.zip

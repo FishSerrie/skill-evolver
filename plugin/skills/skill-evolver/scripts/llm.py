@@ -26,6 +26,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -44,8 +45,10 @@ LLM_BACKENDS = {
         "env_filter": lambda env: {k: v for k, v in env.items() if k != "CLAUDECODE"},
     },
     "codex": {
-        "cmd": ["codex", "-q", "{prompt}"],
+        "cmd": ["codex", "exec", "--skip-git-repo-check",
+                "-o", "{output_path}", "-"],
         "model_flag": "--model",
+        "stdin_prompt": True,
         "env_filter": lambda env: dict(env),
     },
     "opencode": {
@@ -88,11 +91,16 @@ def _detect_llm_backend() -> str:
 
 
 def _call_llm(prompt: str, model: str | None = None,
-              timeout: int = 120, backend: str | None = None) -> str:
+              timeout: int = 120, backend: str | None = None,
+              cwd: str | None = None) -> str:
     """Call LLM and return the text response.
 
     Supports multiple backends: claude, codex, opencode, http.
     Auto-detects backend if not specified.
+
+    Args:
+        cwd: optional working directory for the subprocess.
+             Useful when the LLM needs project context (e.g. skill loading).
     """
     backend = backend or _detect_llm_backend()
     config = LLM_BACKENDS.get(backend, LLM_BACKENDS["claude"])
@@ -104,9 +112,26 @@ def _call_llm(prompt: str, model: str | None = None,
     # CLI backend
     cmd_template = config["cmd"]
     cmd = []
+    output_path = None
+    use_stdin_prompt = bool(config.get("stdin_prompt"))
+    if not use_stdin_prompt:
+        use_stdin_prompt = "{prompt}" not in cmd_template and bool(cmd_template)
+        use_stdin_prompt = use_stdin_prompt and cmd_template[-1] == "-"
+    if any(part == "{output_path}" for part in cmd_template):
+        tmp = tempfile.NamedTemporaryFile(
+            prefix=f"skill-evolver-{backend}-",
+            suffix=".txt",
+            delete=False,
+        )
+        output_path = tmp.name
+        tmp.close()
     for part in cmd_template:
         if part == "{prompt}":
             cmd.append(prompt)
+        elif part == "{output_path}":
+            if output_path is None:
+                raise RuntimeError("output_path placeholder used without temp file")
+            cmd.append(output_path)
         else:
             cmd.append(part)
 
@@ -118,12 +143,34 @@ def _call_llm(prompt: str, model: str | None = None,
 
     try:
         result = subprocess.run(cmd, capture_output=True, text=True,
-                                timeout=timeout, env=env)
+                                timeout=timeout, env=env, cwd=cwd,
+                                input=prompt if use_stdin_prompt else None)
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip()
+            if not detail:
+                detail = "no stderr/stdout"
+            return (
+                f"[ERROR: {backend} CLI exited with status "
+                f"{result.returncode}: {detail}]"
+            )
+        if output_path:
+            try:
+                text = Path(output_path).read_text().strip()
+                if text:
+                    return text
+            except OSError:
+                pass
         return result.stdout.strip()
     except subprocess.TimeoutExpired:
         return f"[ERROR: {backend} timed out after {timeout}s]"
     except FileNotFoundError:
         return f"[ERROR: {backend} CLI not found — install it or set LLM_BACKEND]"
+    finally:
+        if output_path:
+            try:
+                os.unlink(output_path)
+            except OSError:
+                pass
 
 
 def _call_llm_http(prompt: str, model: str | None = None,

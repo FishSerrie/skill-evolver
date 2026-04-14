@@ -42,6 +42,7 @@ from gate import phase_6_gate_decision
 from llm import phase_2_3_ideate_and_modify, auto_construct_gt
 from cleanup import (
     cleanup_best_versions, cleanup_eval_outputs, _try_launch_eval_viewer,
+    _prepare_viewer_data,
 )
 from evolve_loop import (  # phase definitions live in evolve_loop.py
     phase_0_setup, phase_1_review, phase_4_commit,
@@ -375,8 +376,14 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
 
     cleanup_best_versions(workspace, keep_n=3)
 
-    # Try to launch Creator's eval viewer if available
-    viewer_launched = _try_launch_eval_viewer(workspace, skill_path)
+    # Build real skill outputs for eval viewer, then generate HTML
+    viewer_data_dir = None
+    try:
+        viewer_data_dir = _prepare_viewer_data(workspace, holdout, skill_path)
+    except Exception as exc:
+        log(f"Viewer data preparation failed (non-fatal): {exc}")
+    viewer_launched = _try_launch_eval_viewer(
+        workspace, skill_path, viewer_data_dir=viewer_data_dir)
     if viewer_launched:
         log("Eval viewer launched — open the URL above to review results")
 
