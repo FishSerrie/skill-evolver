@@ -33,14 +33,19 @@ git checkout -b exp/xxx    # 实验
 至少跑和改动直接相关的测试/验证。
 
 #### Step 4: 准备合并时整理历史
-把分支上的碎 commit 压成 **1-3 个语义完整的 commit**：
+先同步 main，再把碎 commit 压成 **1-3 个语义完整的 commit**：
 ```bash
+# 0. 先同步 main（防止落后于主线）
+git fetch origin
+git rebase main    # 或 git rebase origin/main
+
 # 方式 A：soft reset（推荐，简单直接）
-git reset --soft main
+# 注意：必须基于 merge-base，不能直接 reset --soft main
+git reset --soft $(git merge-base HEAD main)
 git commit -m "feat: ..."
 
 # 方式 B：rebase -i（需要保留 2-3 个有意义的节点时）
-git rebase -i main
+git rebase -i $(git merge-base HEAD main)
 # 在编辑器中把不需要的 commit 标记为 squash/fixup
 ```
 
@@ -63,12 +68,13 @@ git branch -d feat/xxx         # 删除已合并分支
 - 变更点 1
 - 变更点 2
 
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+Co-Authored-By: <实际执行的 agent/模型名称> <noreply@anthropic.com>
 ```
 
 - **type** 可选：feat / fix / refactor / docs / chore / test
 - 英文，首字母小写
 - body 用 bullet points 列出主要变更
+- Co-Authored-By 按实际执行的 agent 填写（如 Claude Opus 4.6、Codex 等），用户手动提交时可省略
 
 ### 版本号
 
