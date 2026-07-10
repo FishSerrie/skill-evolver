@@ -191,7 +191,10 @@ def run_case_behaviorally(skill_path: Path, case: dict, *,
 # docs/private/multi-agent-evolution-upgrade/architecture.md §2.5).
 # ─────────────────────────────────────────────
 
-def _rotation_state_path(workspace: Path) -> Path:
+def rotation_state_path(workspace: Path) -> Path:
+    """Public — evaluator_backends.BehavioralEvaluator computes this from
+    the workspace it infers (or is given) and passes the result into
+    get_rotation_sample(); no other module should hardcode this path."""
     return workspace / "evolve" / "behavioral_rotation.json"
 
 
