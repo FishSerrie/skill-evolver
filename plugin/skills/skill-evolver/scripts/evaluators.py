@@ -435,7 +435,7 @@ class LocalEvaluator(Evaluator):
 # Evaluator registry — lazy strings resolved inside get_evaluator() so
 # importing evaluators.py doesn't pull in evaluator_backends.py unless
 # one of the non-default backends is actually requested.
-EVALUATOR_NAMES: tuple[str, ...] = ("local", "creator", "script", "pytest")
+EVALUATOR_NAMES: tuple[str, ...] = ("local", "creator", "script", "pytest", "behavioral")
 
 
 def get_evaluator(config: dict[str, Any] | None = None) -> Evaluator:
@@ -481,6 +481,16 @@ def get_evaluator(config: dict[str, Any] | None = None) -> Evaluator:
                                 "pytest tests/ -v --tb=short"),
             timeout=config.get("evaluator_timeout", 300),
         )
+    elif name == "behavioral":
+        from evaluator_backends import BehavioralEvaluator
+        return BehavioralEvaluator(
+            model=config.get("model"),
+            backend=config.get("behavioral_backend"),
+            sample_size=config.get("behavioral_sample_size", 8),
+            fidelity=config.get("behavioral_fidelity", "assume_loaded"),
+            timeout=config.get("evaluator_timeout", 120),
+            workspace=config.get("workspace"),
+        )
     else:
         raise ValueError(
             f"Unknown evaluator '{name}'. "
@@ -496,6 +506,10 @@ def parse_evaluator_from_plan(plan_path: Path) -> dict[str, Any]:
         evaluator_script: ./my_eval.py
         evaluator_timeout: 300
         model: claude-sonnet-4-6
+        evaluator: behavioral
+        behavioral_sample_size: 8
+        behavioral_backend: claude
+        behavioral_fidelity: assume_loaded
     """
     config: dict[str, Any] = {}
 
@@ -523,6 +537,23 @@ def parse_evaluator_from_plan(plan_path: Path) -> dict[str, Any]:
                 config["evaluator_timeout"] = int(val)
             except ValueError:
                 pass
+        elif line.startswith("- behavioral_sample_size:") or \
+                line.startswith("behavioral_sample_size:"):
+            val = line.split(":", 1)[1].strip()
+            try:
+                config["behavioral_sample_size"] = int(val)
+            except ValueError:
+                pass
+        elif line.startswith("- behavioral_backend:") or \
+                line.startswith("behavioral_backend:"):
+            val = line.split(":", 1)[1].strip()
+            if val:
+                config["behavioral_backend"] = val
+        elif line.startswith("- behavioral_fidelity:") or \
+                line.startswith("behavioral_fidelity:"):
+            val = line.split(":", 1)[1].strip()
+            if val:
+                config["behavioral_fidelity"] = val
         elif line.startswith("- model:") or line.startswith("model:"):
             val = line.split(":", 1)[1].strip()
             if val:
