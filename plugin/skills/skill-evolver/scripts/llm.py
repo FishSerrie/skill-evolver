@@ -204,6 +204,59 @@ _call_claude = _call_llm
 
 
 # ─────────────────────────────────────────────
+# Phase 2 / Phase 3 — split, isolated (Module B)
+# ─────────────────────────────────────────────
+#
+# phase_2_diagnose and phase_3_modify replace phase_2_3_ideate_and_modify
+# (kept below as a deprecated backward-compat wrapper). Each is a
+# SEPARATE _call_claude invocation — a fresh subprocess, no shared
+# memory, no shared context — which is the actual isolation mechanism
+# in CLI mode (the conversation-mode equivalent is two separate Agent
+# tool calls; see isolation.build_diagnoser_task_spec /
+# build_mutator_task_spec). Prompt-building and response-parsing are
+# NOT duplicated here — both live in isolation.py so the CLI subprocess
+# path and the conversation-mode Agent-call path always agree on what
+# a given diagnoser/mutator response means.
+
+def phase_2_diagnose(skill_path: Path, workspace: Path, review: dict,
+                     gt_path: Path, current_layer: str = "body",
+                     model: str | None = None) -> dict:
+    """Phase 2 (diagnose only) — CLI-mode subprocess call.
+
+    Returns the diagnosis dict shape (see
+    ``isolation.parse_diagnosis_response``):
+    ``{"failure_patterns": [...], "recommended_focus": str,
+    "layer_suggestion": str, "evidence_refs": [...]}``.
+    """
+    from isolation import build_diagnoser_prompt, parse_diagnosis_response
+
+    prompt = build_diagnoser_prompt(
+        skill_path, workspace, review, gt_path, current_layer)
+    response = _call_claude(prompt, model=model, timeout=180)
+    return parse_diagnosis_response(response)
+
+
+def phase_3_modify(skill_path: Path, diagnosis: dict,
+                   current_layer: str = "body",
+                   model: str | None = None) -> dict:
+    """Phase 3 (modify only) — CLI-mode subprocess call.
+
+    Narrow signature by design: no ``review``/``gt_path``/``workspace``
+    parameter, so there is no code path by which this call could see
+    raw GT evidence or the diagnoser's reasoning trace — only the
+    ``diagnosis`` dict :func:`phase_2_diagnose` produced.
+
+    Returns ``{"changed": bool, "description": str}`` (see
+    ``isolation.parse_mutation_response``).
+    """
+    from isolation import build_mutator_prompt, parse_mutation_response
+
+    prompt = build_mutator_prompt(skill_path, diagnosis, current_layer)
+    response = _call_claude(prompt, model=model, timeout=180)
+    return parse_mutation_response(response)
+
+
+# ─────────────────────────────────────────────
 # Phase 2+3: Ideate and Modify
 # ─────────────────────────────────────────────
 
