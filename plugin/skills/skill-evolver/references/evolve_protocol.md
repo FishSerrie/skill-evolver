@@ -56,7 +56,14 @@ grep -l '"pass": false' <workspace>/evolve/iteration-E*/cases/*.json
 
 ## Phase 2: Ideate (Decide What to Change)
 
-Based on Phase 1 analysis, select a mutation direction by priority:
+**⚠️ Execution model changed (Module B, isolation)**: Phase 2 and Phase 3 used to run in the SAME continuous context — whether that was one `claude -p` call (CLI mode) or the driving Claude reasoning through both phases itself in one unbroken trace (in-conversation mode, which SKILL.md calls the primary path: "Claude IS the LLM, there is zero claude -p shell-out"). That meant the diagnoser and the mutator were never actually isolated from each other, just two labels for the same reasoning trace. They now run as two genuinely separate steps:
+
+- **CLI mode**: call `llm.phase_2_diagnose(...)` then (in a separate step) `llm.phase_3_modify(...)` — two independent `claude -p` subprocess calls, no shared memory.
+- **In-conversation mode**: use `isolation.build_diagnoser_task_spec(skill_path, workspace, review, gt_path, current_layer)` to get an Agent tool call spec, issue that Agent tool call yourself, then parse the result with `isolation.parse_diagnosis_response(...)`. Do NOT do the diagnosis reasoning yourself in this same context — the isolation only holds if a genuinely separate Agent tool call does it.
+
+`build_diagnoser_task_spec` physically excludes holdout content (filters any holdout-tagged path out of `review` before building the prompt — see `isolation.py`), so the diagnoser below only ever gets dev-split evidence, regardless of what Phase 1 happened to load.
+
+Based on Phase 1 analysis (passed into `review`), the diagnoser selects a mutation direction by priority:
 
 **Priority ranking:**
 
@@ -69,10 +76,11 @@ Based on Phase 1 analysis, select a mutation direction by priority:
 
 **MANDATORY: Before proposing any change, cite specific trace evidence. State a counterfactual diagnosis: "Case X failed because of Y. If we change Z, the output would instead do W."**
 
-**Output:**
-- One-sentence description of the intended change
-- mutation_type (e.g., body_rewrite / body_simplify / rule_reorder / template_change)
-- Scope of change (which files)
+**Output** (the diagnosis dict — see `isolation.parse_diagnosis_response`):
+- `failure_patterns`: which cases/assertions failed and why (trace evidence, not a guess)
+- `recommended_focus`: one-sentence description of the intended change, handed to Phase 3
+- `layer_suggestion`: which layer to act in
+- `evidence_refs`: what evidence the diagnosis is based on
 
 **Anti-patterns (forbidden — written in the imperative "do not X" form so they are greppable and unambiguous):**
 - do not repeat a change that was already discarded with identical content (check git log first)
@@ -85,11 +93,17 @@ Based on Phase 1 analysis, select a mutation direction by priority:
 
 ## Phase 3: Modify (One Atomic Change)
 
-Execute the change determined in Phase 2.
+Execute the change based on Phase 2's diagnosis — as a SEPARATE step, not a continuation of the same reasoning trace that produced the diagnosis.
+
+- **CLI mode**: `llm.phase_3_modify(skill_path, diagnosis, current_layer, model=...)`.
+- **In-conversation mode**: `isolation.build_mutator_task_spec(skill_path, diagnosis, current_layer)`, issue the Agent tool call yourself, parse with `isolation.parse_mutation_response(...)`.
+
+`build_mutator_prompt`'s function signature has no `review`/`gt_path`/`workspace` parameter — only `diagnosis` (Phase 2's structured output). There is no code path by which this step can see the raw case evidence, holdout content, or the diagnoser's own reasoning trace, only the diagnosis conclusions. Do not work around this by pasting Phase 2's raw evidence into the Phase 3 Agent call's prompt yourself — that defeats the isolation the whole point of this split is to provide.
 
 **Rules:**
 - Only modify files in the current layer
 - The change must be explainable in one sentence
+- Do NOT re-derive your own diagnosis — act on the one Phase 2 produced
 - Post-modification self-check:
   - `git diff --stat` to inspect scope
   - More than 5 files changed -- likely not atomic, split it
