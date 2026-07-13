@@ -48,16 +48,26 @@ from evolve_loop import (  # phase definitions live in evolve_loop.py
     phase_0_setup, phase_1_review, phase_4_commit,
     phase_7_log, phase_8_loop_control,
     git_revert_last, save_best_version, _list_untracked,
+    persist_holdout_cases,
 )
 
 
-def _eval_holdout_or_none(evaluator, skill_path: Path,
-                          gt_path: Path) -> float | None:
+def _eval_holdout_or_none(evaluator, skill_path: Path, gt_path: Path,
+                          workspace: Path | None = None,
+                          iteration: int | None = None) -> float | None:
     """Run the evaluator on the holdout split and return the pass rate.
 
     Returns None when the GT has no holdout cases (so the evaluator either
     raises or reports zero assertions). The gate then degrades to dev-only
     quality logic.
+
+    ``workspace``/``iteration``, when both given, persist the holdout
+    ``cases`` to ``iteration-E{N}/holdout_cases/`` via
+    :func:`persist_holdout_cases` — fixing the bug traced in the
+    architecture plan §0.6, where this function used to read
+    ``result.get("pass_rate")`` and silently drop ``result["cases"]``.
+    Both are optional (default None) so any existing caller that only
+    wants the pass rate keeps working unchanged.
     """
     try:
         result = evaluator.full_eval(skill_path, gt_path, split="holdout")
@@ -65,6 +75,8 @@ def _eval_holdout_or_none(evaluator, skill_path: Path,
         return None
     if not result or result.get("total_assertions", 0) == 0:
         return None
+    if workspace is not None and iteration is not None:
+        persist_holdout_cases(workspace, iteration, result.get("cases"))
     return result.get("pass_rate")
 
 
@@ -151,7 +163,8 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
         )
         log(f"ABORT: {msg}")
         return {"success": False, "error": msg}
-    baseline_holdout = _eval_holdout_or_none(evaluator, skill_path, gt_path)
+    baseline_holdout = _eval_holdout_or_none(
+        evaluator, skill_path, gt_path, workspace=workspace, iteration=0)
     log(f"Baseline: {baseline['total_passed']}/{baseline['total_assertions']} = {baseline_rate:.0%}"
         + (f" | holdout {baseline_holdout:.0%}" if baseline_holdout is not None else " | holdout n/a"))
 
@@ -273,7 +286,8 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
         log("  L2 eval...")
         new_eval = evaluator.full_eval(skill_path, gt_path)
         new_rate = new_eval["pass_rate"]
-        new_holdout = _eval_holdout_or_none(evaluator, skill_path, gt_path)
+        new_holdout = _eval_holdout_or_none(
+            evaluator, skill_path, gt_path, workspace=workspace, iteration=iteration)
         delta = new_rate - best_rate
         ho_msg = (f" | holdout {new_holdout:.0%}" if new_holdout is not None else "")
         log(f"  L2: {new_eval.get('total_passed', '?')}/{new_eval.get('total_assertions', '?')} = {new_rate:.0%} (delta: {delta:+.0%}){ho_msg}")

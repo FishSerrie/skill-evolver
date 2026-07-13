@@ -584,6 +584,31 @@ def persist_cases(workspace: Path, iteration: int,
     )
 
 
+def persist_holdout_cases(workspace: Path, iteration: int,
+                          cases: list | None) -> Path | None:
+    """Write per-case structured JSON to ``iteration-E{N}/holdout_cases/``.
+
+    Sibling of :func:`persist_cases` but for the holdout split, in a
+    SEPARATE directory (not ``cases/``). Architecture plan Module A
+    §0.6 traced a real bug: ``orchestrator._eval_holdout_or_none`` only
+    ever read ``result["pass_rate"]`` off the holdout ``full_eval()``
+    result and discarded ``result["cases"]`` — so holdout case content
+    was never written to disk at all. "The proposer can't see holdout"
+    was therefore an accident of that discard, not an enforced
+    guarantee. This function is the fix; ``isolation.build_diagnoser_
+    prompt`` (scripts/isolation.py) is the other half — it only ever
+    references ``cases/``, never ``holdout_cases/``, so the exclusion
+    has an actual directory boundary to point at instead of relying on
+    the accidental-discard behavior this function replaces.
+    """
+    if not cases:
+        return None
+    return write_cases_to_dir(
+        workspace / "evolve" / f"iteration-E{iteration}" / "holdout_cases",
+        cases,
+    )
+
+
 def write_meta_json(workspace: Path, iteration: int,
                     commit: str, split: str,
                     eval_result: dict) -> Path:
