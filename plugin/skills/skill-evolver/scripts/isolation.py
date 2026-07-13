@@ -210,3 +210,101 @@ def parse_diagnosis_response(text: str) -> dict:
 
     return {"failure_patterns": [], "recommended_focus": "",
             "layer_suggestion": "", "evidence_refs": []}
+
+
+# ─────────────────────────────────────────────
+# Mutator (Phase 3) — narrow signature IS the isolation mechanism
+# ─────────────────────────────────────────────
+
+def build_mutator_prompt(skill_path: Path, diagnosis: dict,
+                         current_layer: str = "body") -> str:
+    """Build the modification-only prompt.
+
+    The narrow signature is the isolation mechanism itself: there is
+    no ``review``/``gt_path``/``workspace`` parameter, so there is no
+    code path by which raw GT evidence, holdout content, or the
+    diagnoser's private reasoning trace could reach this prompt — only
+    ``diagnosis``, the diagnoser's own structured JSON output
+    (:func:`parse_diagnosis_response`'s return shape). This is
+    intentionally a stronger guarantee than "the prompt says don't
+    look": a future caller cannot accidentally pass in `review` even
+    by mistake, because the parameter does not exist to pass it into.
+    """
+    skill_md_path = skill_path / "SKILL.md"
+
+    patterns_text = json.dumps(diagnosis.get("failure_patterns", []), ensure_ascii=False)
+    recommended_focus = diagnosis.get("recommended_focus", "")
+    evidence_refs = diagnosis.get("evidence_refs", [])
+
+    return f"""You are MAKING ONE ATOMIC CHANGE to a skill's SKILL.md, based on a diagnosis handed to you by a separate diagnosis step. You did not run that diagnosis yourself and cannot see its reasoning trace or the raw evidence it was based on — only its conclusions below.
+
+Current layer: {current_layer}
+SKILL.md is at: {skill_md_path}
+
+## Diagnosis handed to you
+Failure patterns: {patterns_text}
+Recommended focus: {recommended_focus or "(none given — use your judgment from the failure patterns above)"}
+Evidence refs (informational only — do not re-read/re-verify them, trust the diagnosis as given): {evidence_refs}
+
+Rules:
+- Only modify files in the current layer ({current_layer}).
+- The change must be explainable in one sentence.
+- Do NOT re-derive your own diagnosis — act on the one given above.
+- Do NOT run git commands — commit happens in a separate step.
+
+Read the SKILL.md at {skill_md_path}, then make your change.
+
+After making the change, output EXACTLY this JSON on the last line:
+{{"changed": true, "description": "one sentence describing what you changed"}}
+
+If you find nothing to improve, output:
+{{"changed": false, "description": "no improvement found"}}
+"""
+
+
+def build_mutator_task_spec(skill_path: Path, diagnosis: dict,
+                           current_layer: str = "body",
+                           subagent_type: str = "general-purpose") -> dict:
+    """Conversation-mode Agent tool call spec for the mutator.
+
+    Same non-invocation contract as :func:`build_diagnoser_task_spec`
+    — this only prepares inputs. The driving Claude issues the actual
+    Agent tool call, which gets Read/Edit/Write access to
+    ``skill_path`` (so it can genuinely apply the change) but starts
+    from a fresh context that never saw Phase 1's review data,
+    holdout content, or the diagnoser's reasoning trace — only the
+    ``diagnosis`` dict baked into this prompt.
+    """
+    return {
+        "prompt": build_mutator_prompt(skill_path, diagnosis, current_layer),
+        "subagent_type": subagent_type,
+        "description": f"Apply one atomic change to {skill_path.name} (layer={current_layer})",
+        "isolation": "subagent_context",
+    }
+
+
+def parse_mutation_response(text: str) -> dict:
+    """Parse the mutator's raw text output into ``{"changed", "description"}``.
+
+    Shared by llm.py's CLI-mode subprocess path and the
+    conversation-mode Agent-call path. Mirrors the existing defensive
+    parsing in ``phase_2_3_ideate_and_modify`` (Red-team finding #1,
+    llm.py) — malformed/missing JSON degrades to a safe "no change"
+    result rather than raising.
+    """
+    for line in reversed(text.split("\n")):
+        line = line.strip()
+        if line.startswith("{") and "changed" in line:
+            try:
+                parsed = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(parsed, dict):
+                continue
+            return {
+                "changed": bool(parsed.get("changed", False)),
+                "description": str(parsed.get(
+                    "description", "llm did not provide description")),
+            }
+
+    return {"changed": False, "description": "could not parse response"}
