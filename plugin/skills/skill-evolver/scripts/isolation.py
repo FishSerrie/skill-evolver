@@ -146,3 +146,67 @@ Output EXACTLY this JSON on the last line (no other text after it):
 If no clear pattern was found, output:
 {{"failure_patterns": [], "recommended_focus": "", "layer_suggestion": "{current_layer}", "evidence_refs": []}}
 """
+
+
+def build_diagnoser_task_spec(skill_path: Path, workspace: Path, review: dict,
+                              gt_path: Path, current_layer: str = "body",
+                              subagent_type: str = "general-purpose") -> dict:
+    """Conversation-mode Agent tool call spec for the diagnoser.
+
+    Mirrors ``behavioral_runner.build_behavioral_task_spec`` — this
+    function does NOT invoke the Agent tool itself; it only prepares
+    inputs. The Claude driving the evolve loop must issue the actual
+    Agent tool call with ``prompt=spec["prompt"]`` and pass the
+    sub-agent's returned text to :func:`parse_diagnosis_response` to
+    get the diagnosis dict.
+
+    The sub-agent spawned this way has no access to the main
+    conversation's history (the Agent tool's own isolation guarantee)
+    — it only ever sees the prompt text :func:`build_diagnoser_prompt`
+    built, which itself never contains holdout content. That is the
+    same physical-isolation mechanism Module A's behavioral runner and
+    Module D's verifier panel use: an independent Agent tool call, not
+    "same context, asked not to look."
+    """
+    return {
+        "prompt": build_diagnoser_prompt(
+            skill_path, workspace, review, gt_path, current_layer),
+        "subagent_type": subagent_type,
+        "description": f"Diagnose failures for {skill_path.name} (layer={current_layer})",
+        "isolation": "subagent_context",
+    }
+
+
+def parse_diagnosis_response(text: str) -> dict:
+    """Parse the diagnoser's raw text output into the diagnosis dict shape.
+
+    Shared by llm.py's CLI-mode subprocess path (parses
+    ``_call_claude``'s stdout) and the conversation-mode Agent-call
+    path (parses the sub-agent's returned text) — both must interpret
+    the same "last JSON line" convention identically, so
+    ``phase_2_diagnose`` and a conversation-mode caller never disagree
+    about what a given diagnoser response means.
+
+    Mirrors the defensive-default parsing ``phase_2_3_ideate_and_modify``
+    already does (Red-team finding #1, llm.py) — a malformed or
+    missing JSON line degrades to a safe empty diagnosis rather than
+    raising, so one bad diagnoser response can't crash the loop.
+    """
+    for line in reversed(text.split("\n")):
+        line = line.strip()
+        if line.startswith("{") and "failure_patterns" in line:
+            try:
+                parsed = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(parsed, dict):
+                continue
+            return {
+                "failure_patterns": parsed.get("failure_patterns") or [],
+                "recommended_focus": str(parsed.get("recommended_focus", "")),
+                "layer_suggestion": str(parsed.get("layer_suggestion", "")),
+                "evidence_refs": parsed.get("evidence_refs") or [],
+            }
+
+    return {"failure_patterns": [], "recommended_focus": "",
+            "layer_suggestion": "", "evidence_refs": []}
