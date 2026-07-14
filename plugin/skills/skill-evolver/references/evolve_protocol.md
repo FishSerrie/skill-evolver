@@ -251,6 +251,24 @@ Record crash reason in experiments.jsonl.
 
 ---
 
+## Phase 6.5: Adversarial Review Panel
+
+**⚠️ Module D — only runs when Phase 6 decided `keep`.** Reviewing a candidate that already failed the numeric gate would be wasted cost — this step exists to catch what the numeric gate cannot see (overfitting to dev, gaming a specific assertion's literal match, breaking a structural invariant), not to re-run the numeric check. Read `references/gate_rules.md`'s "Adversarial Review Panel" section for the full aggregation rule.
+
+- **CLI mode**: `llm.phase_6_5_review(skill_path, diff, metrics, model=...)` — three independent `_call_claude` subprocess calls, one per checker, aggregated internally by `verifier_panel.aggregate_verdicts`.
+- **In-conversation mode**: for each checker in `verifier_panel.CHECKERS` (`overfit`, `assertion_gaming`, `structural`) — call `verifier_panel.build_verifier_task_spec(skill_path, diff, metrics, checker)`, issue that Agent tool call yourself, parse the sub-agent's returned text with `verifier_panel.parse_verifier_response(response_text, checker)`. Do NOT do all three checks yourself in the same context — the isolation only holds if three genuinely separate Agent tool calls do it. After collecting all three verdicts, call `verifier_panel.aggregate_verdicts(verdicts)`.
+
+`build_verifier_task_spec`'s signature has no `diagnosis`/`description` parameter — the verifiers never see the proposer's own account of what it did or why, only the diff Phase 4 committed and the metrics Phase 6 already computed. Do not work around this by pasting the proposer's description into a verifier's Agent call yourself — that defeats the isolation the whole point of this step is to provide.
+
+**Decision handling:**
+- `aggregate_verdicts` returns `"reject"` → override the Phase 6 decision to `discard`; proceed to the normal discard/revert path below.
+- Returns `"skipped"` (>= 2 of the 3 verifier calls failed) → keep the Phase 6 decision as-is; record the skip explicitly (`adversarial_review: {"decision": "skipped", ...}`) — never silently treat a skip as a pass.
+- Returns `"pass"` → the Phase 6 `keep` decision stands.
+
+Log the full `aggregate_verdicts` return dict (all 3 verdicts + reasoning, not just the final decision) into the `experiment` record Phase 7 writes to experiments.jsonl — a dispute discovered later needs the full lineage to diagnose, not just "rejected".
+
+---
+
 ## Phase 7: Log
 
 ### results.tsv

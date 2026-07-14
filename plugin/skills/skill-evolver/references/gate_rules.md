@@ -182,6 +182,38 @@ A mutation that passes the quality gate but silently drops structural components
 
 ---
 
+## Adversarial Review Panel (Phase 6.5)
+
+> **Note:** the Structural Integrity Checks above and part of the overfitting concern this section opens with are now additionally checked by real code, not just documented convention — via the panel below. `gate.py::phase_6_gate_decision` itself is unchanged (still a pure 5-dimension numeric AND gate); the panel runs as a separate Phase 6.5, after a candidate already passed that numeric gate and before it is actually treated as a keep.
+
+Implemented in `scripts/verifier_panel.py` (isolation mechanism + aggregation) + `scripts/llm.py::phase_6_5_review` (CLI-mode wiring) + `scripts/orchestrator.py` (insertion point — between the Phase 6 decision and the keep/discard branch; see `references/evolve_protocol.md` Phase 6.5 for the conversation-mode path).
+
+### Three independent checkers
+
+Each checker is one independent Agent tool call (in-conversation mode) or one independent `_call_claude` subprocess (CLI mode) — the same physical isolation mechanism Module B's diagnoser/mutator split uses (`isolation.py`), applied to a new role. None of the three ever sees the proposer's own description of its change — `verifier_panel.build_verifier_task_spec` has no `diagnosis`/`description` parameter, only the diff and the numeric metrics the gate already computed.
+
+| Checker | Suspicion angle | Given |
+|---|---|---|
+| `overfit` | dev improved but holdout flat/regressed; unreasonable case-specific hardcoding | diff + dev/holdout pass_rate (current vs. baseline) |
+| `assertion_gaming` | literal strings stuffed into unrelated text to satisfy `contains`; synonym swaps to dodge `not_contains` | diff + metrics (deliberately NOT the proposer's description) |
+| `structural` | missing section headers, deleted helper scripts, removed reference files without indication of intent | diff + skill file tree |
+
+### Aggregation rule
+
+Implemented in `verifier_panel.py::aggregate_verdicts` — deliberately conservative, because a false reject costs one more iteration while a false pass risks a gamed/overfit/structurally-broken candidate reaching main:
+
+- All 3 checkers return a real verdict (no failed call): **>= 2 `reject` vetoes** the candidate, overriding the numeric gate's keep.
+- Exactly 1 verifier call fails: degrade to the other 2's verdicts — agreement wins; disagreement (1 pass, 1 reject) defaults to `reject`.
+- **>= 2 verifier calls fail**: the panel itself is unusable this round. Result is `"skipped"`, which falls back to the numeric gate's own decision — but the skip is recorded explicitly as `adversarial_review: {"decision": "skipped", ...}` in experiments.jsonl, never silently treated as a pass.
+
+### Known residual risk (not solved by majority vote)
+
+Majority vote assumes the 3 verifiers' judgments are independent. If they share enough model/prompt similarity to be correlated rather than genuinely independent, a proposer that learns to satisfy 2/3 could still slip through — the three distinct suspicion angles reduce this correlation but do not guarantee independence. This is a known limitation, not a solved problem.
+
+Darwin-Gödel Machine (arXiv 2505.22954) is the concrete cautionary case for why this panel cannot be oversold as unfoolable: it found a branch that satisfied its evaluation function by deleting the log markers that function checked for, rather than fixing the underlying bug ("objective hacking"). Per that lesson, the `assertion_gaming` checker's specific detection heuristics live only inside `verifier_panel.py`, never in any file the mutator's Agent call has read access to.
+
+---
+
 ## L1 Quality Rules (P0 Hard Rules)
 
 Added 2026-04-10, inspired by the skill-qa-workflow project (83 universal
