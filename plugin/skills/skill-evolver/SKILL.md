@@ -103,7 +103,7 @@ additionally needed for the CLI `--run` fallback.
 
 | Dependency | Why | Fallback |
 |---|---|---|
-| **LLM CLI on PATH** — one of `claude`, `codex`, `opencode` | CLI `--run` mode's Phase 2+3 (`phase_2_3_ideate_and_modify`) shells out via `_call_llm()` in `scripts/llm.py` to invoke LLM reasoning in a subprocess. Auto-detected in that order; override with `LLM_BACKEND=<name>`. | HTTP endpoint via `EVOLVER_LLM_URL` env var; or use the primary in-conversation path where Claude IS the LLM and no subprocess is needed. |
+| **LLM CLI on PATH** — one of `claude`, `codex`, `opencode` | CLI `--run` mode's Phase 2 (`phase_2_diagnose`) and Phase 3 (`phase_3_modify`) each shell out via `_call_llm()` in `scripts/llm.py` to invoke LLM reasoning in a subprocess — two separate calls, not one (Module B isolation). Auto-detected in that order; override with `LLM_BACKEND=<name>`. | HTTP endpoint via `EVOLVER_LLM_URL` env var; or use the primary in-conversation path where Claude IS the LLM and no subprocess is needed. |
 | **GT data** (`<workspace>/evals/evals.json`) | Supplies the test cases + assertions every iteration is scored against. | `auto_construct_gt` (in `scripts/llm.py`) generates a starter GT from the skill's SKILL.md when missing — requires an LLM CLI, so only works in CLI mode. In the conversation path, Claude constructs GT interactively with the user. |
 
 ### What the primary (conversation) path does NOT need
@@ -281,8 +281,8 @@ A/B compares two skill versions against the same GT. Example usage:
 ```
 
 Optional blind comparison via `agents/comparator_agent.md` + attribution
-analysis via `agents/analyzer_agent.md`. Uses Creator's
-`scripts/aggregate_benchmark.py` for the numeric roll-up.
+analysis via `agents/analyzer_agent.md`. Uses
+`scripts/aggregate_results.py` for the numeric roll-up.
 
 ### Evolve Mode (core)
 
@@ -387,7 +387,7 @@ Likewise `from evaluators import BinaryLLMJudge` and
 | File | Owns | Lines |
 |---|---|---:|
 | `scripts/evolve_loop.py` | Phase functions 0/1/4/5/7/8 + `git_revert_last` + `save_best_version` + `persist_cases` + `write_cases_to_dir` + `write_meta_json` + `_list_untracked` + dynamic `suggested_greps` tailored to failing assertion types + PEP 562 `__getattr__` re-export of orchestrator symbols + `python scripts/evolve_loop.py` CLI entry (delegates to `orchestrator.main`) | 822 |
-| `scripts/llm.py` | `LLM_BACKENDS` registry + `_call_llm` / `_call_llm_http` / `_call_claude` + `phase_2_3_ideate_and_modify` (with full per-case JSON schema section in prompt + safe-default shape normalization) + `run_l2_eval_via_claude` + `_local_eval` + `auto_construct_gt` + `_validate_gt_schema` | 549 |
+| `scripts/llm.py` | `LLM_BACKENDS` registry + `_call_llm` / `_call_llm_http` / `_call_claude` + `phase_2_diagnose` / `phase_3_modify` (Module B, two isolated calls) + `phase_2_3_ideate_and_modify` (deprecated wrapper, kept for back-compat) + `phase_6_5_review` (Module D, three isolated verifier calls) + `run_l2_eval_via_claude` + `_local_eval` + `auto_construct_gt` + `_validate_gt_schema` | 556 |
 | `scripts/orchestrator.py` | `run_evolve_loop` (the 8-Phase driver) + `main` (argparse + subcommand dispatch) + `_eval_holdout_or_none` + empty-dev-GT guard + revert-fail abort | 548 |
 | `scripts/evaluators.py` | `Evaluator` ABC + `LocalEvaluator` (thin `_evaluate_assertion` dispatcher that delegates to `trace_enrichment` module functions for all rich helpers) + `get_evaluator` factory (lazy-imports backends) + `parse_evaluator_from_plan` + `EVALUATOR_NAMES` + back-compat re-exports of `BinaryLLMJudge` (from `binary_judge`) and all trace helpers (from `trace_enrichment`) | 531 |
 | `scripts/trace_enrichment.py` | Paper §3 four-component trace helpers as pure module functions: `locate_in_corpus` / `excerpt` / `nearest_match` (state updates) + `build_skill_snapshot` (state updates) + `check_script_rich` (tool calls) + `check_fact_coverage_rich` (model outputs, takes `judge` as explicit param) + `check_json_schema_rich` (state updates with failure path) + `basic_schema_check` / `basic_schema_check_with_path` | 470 |

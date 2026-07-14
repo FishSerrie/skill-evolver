@@ -39,7 +39,7 @@ from common import require_creator, CreatorNotFoundError, find_workspace
 from aggregate_results import parse_results_tsv, calculate_summary
 from evaluators import get_evaluator, parse_evaluator_from_plan, Evaluator
 from gate import phase_6_gate_decision
-from llm import phase_2_3_ideate_and_modify, phase_6_5_review, auto_construct_gt
+from llm import phase_2_diagnose, phase_3_modify, phase_6_5_review, auto_construct_gt
 from cleanup import (
     cleanup_best_versions, cleanup_eval_outputs, _try_launch_eval_viewer,
     _prepare_viewer_data,
@@ -213,10 +213,22 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
         # staged, any user-dropped debris is ignored.
         untracked_before = _list_untracked(skill_path)
 
-        # Phase 2+3: Ideate and Modify (via claude -p)
-        log("Phase 2+3: Ideate and Modify (calling claude -p)")
-        result_23 = phase_2_3_ideate_and_modify(
-            skill_path, workspace, review, gt_path, current_layer, model)
+        # Phase 2: Diagnose, Phase 3: Modify (via claude -p) — two
+        # separate _call_claude subprocess invocations, no shared
+        # context (Module B isolation; phase_2_3_ideate_and_modify is
+        # the deprecated single-call predecessor, kept only for
+        # external callers that haven't migrated)
+        log("Phase 2: Diagnose (calling claude -p)")
+        diagnosis = phase_2_diagnose(
+            skill_path, workspace, review, gt_path, current_layer, model=model)
+        log("Phase 3: Modify (calling claude -p)")
+        mutation = phase_3_modify(skill_path, diagnosis, current_layer, model=model)
+        result_23 = {
+            "changed": mutation["changed"],
+            "description": mutation["description"],
+            "mutation_type": "unknown",
+            "diagnosis": diagnosis.get("recommended_focus", ""),
+        }
         log(f"  Result: changed={result_23['changed']}, {result_23['description']}")
 
         if not result_23["changed"]:
