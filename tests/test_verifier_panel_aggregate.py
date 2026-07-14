@@ -70,8 +70,12 @@ class AggregateVerdictsOneErrorTests(unittest.TestCase):
         self.assertEqual(result["decision"], "reject")
 
     def test_one_error_remaining_two_disagree_defaults_to_reject(self):
-        verdicts = [_verdict("overfit", "error"), _verdict("assertion_gaming", "pass"),
-                   _verdict("structural", "reject")]
+        # Neither remaining verdict is "structural" here, so this
+        # exercises the generic 1-error-disagree conservative-reject
+        # path, not the structural veto (see StructuralVetoTests below
+        # for that).
+        verdicts = [_verdict("structural", "error"), _verdict("assertion_gaming", "pass"),
+                   _verdict("overfit", "reject")]
         result = verifier_panel.aggregate_verdicts(verdicts)
         self.assertEqual(result["decision"], "reject")
         self.assertIn("conservative", result["reasoning"])
@@ -96,6 +100,50 @@ class AggregateVerdictsMultiErrorTests(unittest.TestCase):
         result = verifier_panel.aggregate_verdicts(verdicts)
         self.assertEqual(result["verdicts"], verdicts)
         self.assertIn("2/3", result["reasoning"])
+
+
+class StructuralVetoTests(unittest.TestCase):
+    """Real gap found via a live red-team round: a genuine structural
+    violation (a required section silently deleted) got a real
+    "reject" from the structural checker, but overfit/assertion_gaming
+    correctly said "pass" from their own narrow angles — the old
+    "≥2/3 reject" majority rule outvoted the one checker that actually
+    saw the problem. structural is different in kind from the other
+    two (near-objective consistency check, not a judgment call about
+    intent), so its reject is now an independent veto that bypasses
+    the majority count entirely."""
+
+    def test_structural_reject_alone_vetoes_even_when_other_two_pass(self):
+        verdicts = [_verdict("overfit", "pass"), _verdict("assertion_gaming", "pass"),
+                   _verdict("structural", "reject", "deleted Error Handling section")]
+        result = verifier_panel.aggregate_verdicts(verdicts)
+        self.assertEqual(result["decision"], "reject")
+        self.assertIn("structural veto", result["reasoning"])
+        self.assertIn("deleted Error Handling section", result["reasoning"])
+
+    def test_structural_pass_does_not_trigger_veto_path(self):
+        verdicts = [_verdict("overfit", "pass"), _verdict("assertion_gaming", "pass"),
+                   _verdict("structural", "pass")]
+        result = verifier_panel.aggregate_verdicts(verdicts)
+        self.assertEqual(result["decision"], "pass")
+        self.assertNotIn("structural veto", result["reasoning"])
+
+    def test_structural_veto_fires_even_if_the_other_two_calls_errored(self):
+        # A structural reject is real signal that shouldn't be
+        # discarded just because two unrelated calls failed.
+        verdicts = [_verdict("overfit", "error"), _verdict("assertion_gaming", "error"),
+                   _verdict("structural", "reject", "deleted a helper script")]
+        result = verifier_panel.aggregate_verdicts(verdicts)
+        self.assertEqual(result["decision"], "reject")
+        self.assertIn("structural veto", result["reasoning"])
+
+    def test_structural_error_does_not_veto_only_a_real_reject_does(self):
+        verdicts = [_verdict("overfit", "pass"), _verdict("assertion_gaming", "pass"),
+                   _verdict("structural", "error")]
+        result = verifier_panel.aggregate_verdicts(verdicts)
+        # Only 1 error total, remaining 2 agree "pass" -> pass, not a veto.
+        self.assertEqual(result["decision"], "pass")
+        self.assertNotIn("structural veto", result["reasoning"])
 
 
 class AggregateVerdictsRobustnessTests(unittest.TestCase):

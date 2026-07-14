@@ -217,6 +217,27 @@ def aggregate_verdicts(verdicts: list) -> dict:
     risk" note. This is a known limitation, not a claim this function
     disproves.
 
+    ``structural`` gets an independent veto, bypassing the majority
+    count entirely — real bug found via a live red-team round: a
+    genuine structural violation (a required section silently deleted,
+    no indication of intent) got a real "reject" from the
+    ``structural`` checker, but ``overfit``/``assertion_gaming``
+    correctly said "pass" from their own narrow angles (it wasn't an
+    overfit signature and no literal string was stuffed), so the old
+    "≥2/3 reject" rule outvoted the one checker that actually saw the
+    problem. This isn't a correlation/collusion failure the residual-
+    risk note above already covers — it's structural: a "pure"
+    single-category violation can only ever be seen by the one checker
+    whose lens covers it, so it can never reach 2 votes no matter how
+    real it is. ``structural`` is different in kind from the other two
+    checkers anyway (its own suspicion text: "the one checker that does
+    not require guessing at the proposer's motive... not a check of
+    intent") — it's a near-objective consistency check, not a
+    probabilistic judgment call, so a majority-vote discount doesn't
+    apply the same way. ``overfit``/``assertion_gaming`` keep the
+    majority-of-2 rule between themselves; only ``structural``'s
+    verdict is exempted from being outvoted.
+
     Raises ``ValueError`` if ``verdicts`` does not have exactly 3
     entries — the majority-of-3 rule below is only meaningful for a
     3-verifier panel; silently reasoning about "2/3" against a list of
@@ -238,6 +259,17 @@ def aggregate_verdicts(verdicts: list) -> dict:
         else {**v, "verdict": "error"}
         for v in verdicts
     ]
+
+    structural = next((v for v in verdicts if v.get("checker") == "structural"), None)
+    if structural is not None and structural.get("verdict") == "reject":
+        return {
+            "decision": "reject",
+            "verdicts": verdicts,
+            "reasoning": (
+                f"structural veto (independent of majority vote): "
+                f"{structural.get('reason', '')}"
+            ),
+        }
 
     errors = [v for v in verdicts if v.get("verdict") == "error"]
     clean = [v for v in verdicts if v.get("verdict") != "error"]
