@@ -257,6 +257,41 @@ def phase_3_modify(skill_path: Path, diagnosis: dict,
 
 
 # ─────────────────────────────────────────────
+# Phase 6.5 — adversarial review panel (Module D), CLI mode
+# ─────────────────────────────────────────────
+
+def phase_6_5_review(skill_path: Path, diff: str, metrics: dict,
+                     model: str | None = None) -> dict:
+    """Phase 6.5 (adversarial review) — CLI-mode subprocess calls.
+
+    Three SEPARATE ``_call_claude`` invocations, one per checker in
+    ``verifier_panel.CHECKERS`` — fresh subprocesses, no shared memory,
+    mirroring how :func:`phase_2_diagnose` and :func:`phase_3_modify`
+    are isolated from each other. The in-conversation equivalent is
+    three separate Agent tool calls using
+    ``verifier_panel.build_verifier_task_spec`` (see
+    ``references/evolve_protocol.md`` Phase 6.5).
+
+    Returns the aggregated dict from
+    ``verifier_panel.aggregate_verdicts``:
+    ``{"decision": "pass"|"reject"|"skipped", "verdicts": [...],
+    "reasoning": str}``.
+    """
+    from verifier_panel import (
+        build_verifier_task_spec, parse_verifier_response, aggregate_verdicts,
+        CHECKERS,
+    )
+
+    verdicts = []
+    for checker in CHECKERS:
+        spec = build_verifier_task_spec(skill_path, diff, metrics, checker)
+        response = _call_claude(spec["prompt"], model=model, timeout=180)
+        verdicts.append(parse_verifier_response(response, checker))
+
+    return aggregate_verdicts(verdicts)
+
+
+# ─────────────────────────────────────────────
 # Phase 2+3: Ideate and Modify
 # ─────────────────────────────────────────────
 
