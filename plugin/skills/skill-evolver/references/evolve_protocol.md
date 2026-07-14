@@ -280,7 +280,7 @@ echo -e "${iteration}\t${commit}\t${metric}\t${delta}\t${trigger_f1}\t${tokens}\
 ### experiments.jsonl
 
 ```bash
-echo '{"iteration":N,"mutation_type":"...","mutation_layer":"...","intent":"...","diagnosis":"...","cases_improved":[...],"cases_degraded":[...],"trigger_delta":0.0,"token_delta":0,"status":"keep/discard"}' >> <workspace>/evolve/experiments.jsonl
+echo '{"iteration":N,"mutation_type":"...","mutation_layer":"...","intent":"...","diagnosis":"...","cases_improved":[...],"cases_degraded":[...],"trigger_delta":0.0,"token_delta":0,"status":"keep/discard","adversarial_review":{"decision":"pass","verdicts":[...],"reasoning":"..."}}' >> <workspace>/evolve/experiments.jsonl
 ```
 
 ### Progress Summary (every 10 iterations)
