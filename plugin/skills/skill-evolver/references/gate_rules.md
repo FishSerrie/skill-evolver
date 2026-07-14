@@ -155,19 +155,15 @@ These thresholds can be overridden by the user in the evolve configuration.
 
 ## Strict Eval Gate (Supplementary)
 
-> **Note:** holdout consistency is now enforced **on every iteration** by the
-> main gate above (the `holdout_consistent` block). This section originally
-> described a separate convergence-time check; that role is now subsumed by
-> the per-iteration guard. Strict Eval still runs additional surfaces
-> (regression set, blind A/B) but does not need its own quality logic.
-
-```python
-# Per-iteration holdout consistency (already enforced in gate_decision):
-holdout_consistent = (
-    current.holdout_pass_rate
-    >= baseline.holdout_pass_rate - policy.noise_threshold
-)
-```
+Holdout consistency is now enforced **on every iteration** by the main
+gate above (the `holdout_consistent` block in the pseudocode) — this
+section used to describe a separate convergence-time check with its
+own copy of that same logic; that copy has been removed since it only
+ever restated the per-iteration guard verbatim. Strict Eval's actual
+remaining job is running the additional surfaces the per-iteration
+gate doesn't touch — regression set, optional blind A/B (see
+`references/evolve_protocol.md`'s Phase 5 "Strict Eval" section) — not
+quality logic of its own.
 
 ---
 
@@ -186,12 +182,12 @@ Negative assertions catch cases where the metric improves while the output degra
 
 ### Structural Integrity Checks
 
-After every mutation, verify that structural elements remain intact:
-- **Section headers**: No required section headers disappeared from the skill body
-- **Scripts**: No helper scripts were deleted (only modified or replaced)
-- **References**: No reference files were removed without explicit intent
-
-A mutation that passes the quality gate but silently drops structural components is a false positive.
+A mutation that passes the quality gate but silently drops structural
+components (a section header, a helper script, a reference file) is a
+false positive. This is one of the three suspicion angles the
+Adversarial Review Panel's `structural` checker enforces with real
+code, not just documented convention — see that section below for the
+concrete checklist; it's the authoritative version, not restated here.
 
 ### Holdout Set Protocol
 

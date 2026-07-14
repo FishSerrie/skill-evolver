@@ -87,7 +87,7 @@ Based on Phase 1 analysis (passed into `review`), the diagnoser selects a mutati
 - do not bundle multiple unrelated changes in one iteration (the one-sentence test: if you need "and" to describe it, it is two changes)
 - do not make cross-layer changes
 - do not guess — if no trace evidence points to a clear cause, say so explicitly and gather more evidence first (Meta-Trace mandatory protocol)
-- **do not identify a problem without fixing it** -- if it is a problem, it warrants an iteration. The purpose of iteration is continuous improvement; skipping "small issues" forfeits improvement opportunities
+- **do not identify a problem without fixing it** -- if it is a problem, it warrants an iteration
 
 ---
 
@@ -104,9 +104,7 @@ Execute the change based on Phase 2's diagnosis — as a SEPARATE step, not a co
 - Only modify files in the current layer
 - The change must be explainable in one sentence
 - Do NOT re-derive your own diagnosis — act on the one Phase 2 produced
-- Post-modification self-check:
-  - `git diff --stat` to inspect scope
-  - More than 5 files changed -- likely not atomic, split it
+- Post-modification self-check: run `references/mutation_policy.md`'s "Atomic Change Self-Check" (one-sentence test + file count + diff size) — don't restate its thresholds here, they'd drift out of sync
 
 **Modification principles:**
 - Prefer explaining "why" over hard-coding MUST/NEVER
