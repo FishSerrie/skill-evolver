@@ -87,6 +87,21 @@ class BuildVerifierTaskSpecTests(unittest.TestCase):
             self.skill_path, self.diff, self.metrics, "structural")
         self.assertIn("Do NOT modify anything", spec["prompt"])
 
+    def test_huge_diff_is_truncated_not_embedded_verbatim(self):
+        # Real crash risk found via adversarial review: CLI mode passes
+        # the whole prompt as a single argv element — an unbounded diff
+        # risks OSError (E2BIG, "Argument list too long").
+        huge_diff = "+line\n" * 10_000
+        spec = verifier_panel.build_verifier_task_spec(
+            self.skill_path, huge_diff, self.metrics, "overfit")
+        self.assertLess(len(spec["prompt"]), len(huge_diff))
+        self.assertIn("truncated", spec["prompt"])
+
+    def test_small_diff_is_not_truncated(self):
+        spec = verifier_panel.build_verifier_task_spec(
+            self.skill_path, self.diff, self.metrics, "overfit")
+        self.assertNotIn("truncated", spec["prompt"])
+
 
 class ParseVerifierResponseTests(unittest.TestCase):
     def test_parses_pass_verdict(self):

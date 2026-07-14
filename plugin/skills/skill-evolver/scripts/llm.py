@@ -165,6 +165,19 @@ def _call_llm(prompt: str, model: str | None = None,
         return f"[ERROR: {backend} timed out after {timeout}s]"
     except FileNotFoundError:
         return f"[ERROR: {backend} CLI not found — install it or set LLM_BACKEND]"
+    except (OSError, UnicodeDecodeError) as e:
+        # Real bug found via adversarial review: only TimeoutExpired and
+        # FileNotFoundError were caught, so anything else `subprocess.run`
+        # can raise — e.g. OSError/E2BIG ("Argument list too long", a real
+        # risk once a full diff is embedded directly into a CLI argv
+        # element, see verifier_panel.build_verifier_task_spec's diff cap)
+        # or UnicodeDecodeError from non-UTF-8 subprocess output with
+        # text=True — propagated uncaught and crashed the entire evolve
+        # loop instead of degrading to one failed call. A caller like
+        # phase_6_5_review that's mid-way through several independent
+        # calls needs this to degrade the same way a timeout does, not
+        # lose already-collected verdicts to an unrelated crash.
+        return f"[ERROR: {backend} CLI failed to run: {e}]"
     finally:
         if output_path:
             try:

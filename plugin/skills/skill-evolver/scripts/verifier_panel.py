@@ -47,6 +47,26 @@ from pathlib import Path
 
 CHECKERS = ("overfit", "assertion_gaming", "structural")
 
+# CLI mode passes the whole prompt (which embeds this diff verbatim) as a
+# single argv element to the LLM CLI — an unbounded diff risks OSError
+# (E2BIG, "Argument list too long"), a real crash surface found via
+# adversarial review that no other prompt-builder in this codebase has
+# (auto_construct_gt truncates skill_content to 6000 chars for the same
+# reason). Truncating loses some review fidelity on a genuinely huge diff,
+# but a crashed Phase 6.5 call loses ALL fidelity for that checker instead
+# of just the tail of one large diff.
+_MAX_DIFF_CHARS = 8000
+
+
+def _truncate_diff(diff: str) -> str:
+    if len(diff) <= _MAX_DIFF_CHARS:
+        return diff
+    return (
+        diff[:_MAX_DIFF_CHARS]
+        + f"\n... [diff truncated at {_MAX_DIFF_CHARS} chars, "
+          f"{len(diff) - _MAX_DIFF_CHARS} more chars omitted]"
+    )
+
 
 def _overfit_suspicion_text() -> str:
     return """Suspicion angle: OVERFITTING.
@@ -99,6 +119,7 @@ def build_verifier_task_spec(skill_path: Path, diff: str, metrics: dict,
 
     metrics_json = json.dumps(metrics, ensure_ascii=False, default=str)
     suspicion = _SUSPICION_BUILDERS[checker]()
+    diff = _truncate_diff(diff)
 
     prompt = f"""You are one of three INDEPENDENT verifiers reviewing a candidate skill change that already passed a numeric quality gate. Each verifier looks for a different failure mode; you do not know what the other two verifiers found and should not try to guess. Your job is to catch what the numeric gate cannot see.
 

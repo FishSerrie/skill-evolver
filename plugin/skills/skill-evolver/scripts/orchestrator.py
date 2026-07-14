@@ -335,16 +335,29 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
         # numeric-gate pass; a "skipped" panel result (>=2 verifier
         # calls failed) falls back to the numeric gate's own decision
         # rather than blocking the iteration on a broken review step.
+        # The whole block is wrapped in try/except (defense-in-depth,
+        # per adversarial review): _call_llm now degrades subprocess-
+        # level failures to an "error" verdict internally, but this is
+        # still a newer, less battle-tested subsystem than the rest of
+        # the loop — an unexpected exception here should degrade the
+        # same way a "skipped" panel does, not crash an iteration that
+        # otherwise already has a valid numeric-gate decision.
         adversarial_result = None
         if decision == "keep":
             log("Phase 6.5: Adversarial review")
-            diff = _git_diff_for_commit(skill_path, commit["commit_hash"])
-            adversarial_result = phase_6_5_review(
-                skill_path, diff,
-                {"dev_pass_rate": new_rate, "holdout_pass_rate": new_holdout,
-                 "baseline_dev_pass_rate": best_rate,
-                 "baseline_holdout_pass_rate": best_holdout},
-                model=model)
+            try:
+                diff = _git_diff_for_commit(skill_path, commit["commit_hash"])
+                adversarial_result = phase_6_5_review(
+                    skill_path, diff,
+                    {"dev_pass_rate": new_rate, "holdout_pass_rate": new_holdout,
+                     "baseline_dev_pass_rate": best_rate,
+                     "baseline_holdout_pass_rate": best_holdout},
+                    model=model)
+            except Exception as exc:
+                adversarial_result = {
+                    "decision": "skipped", "verdicts": [],
+                    "reasoning": f"Phase 6.5 raised {type(exc).__name__}: {exc}",
+                }
             log(f"  Panel: {adversarial_result['decision']} — {adversarial_result['reasoning']}")
             if adversarial_result["decision"] == "reject":
                 decision = "discard"
