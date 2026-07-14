@@ -375,7 +375,7 @@ Memory is stored in the target skill's workspace under the `evolve/` subdirector
 
 ## Code Organization
 
-`scripts/` is split across 15 single-purpose files after the 2026-04-10 slim split extracted the trace-enrichment helpers and `BinaryLLMJudge` out of the 1053-line monolith `evaluators.py`. Every file is now ≤ 822 lines; most are well under that.
+`scripts/` is split across 19 single-purpose files after the 2026-04-10 slim split extracted the trace-enrichment helpers and `BinaryLLMJudge` out of the 1053-line monolith `evaluators.py`, plus four files added by the multi-agent evolution architecture upgrade (Modules A/B/D): `behavioral_runner.py`, `migrate_to_behavioral.py`, `isolation.py`, and `verifier_panel.py`.
 
 `from evolve_loop import X` still works for all the symbols listed
 below via top-level re-exports and PEP 562 module `__getattr__`, so
@@ -393,11 +393,15 @@ Likewise `from evaluators import BinaryLLMJudge` and
 | `scripts/trace_enrichment.py` | Paper §3 four-component trace helpers as pure module functions: `locate_in_corpus` / `excerpt` / `nearest_match` (state updates) + `build_skill_snapshot` (state updates) + `check_script_rich` (tool calls) + `check_fact_coverage_rich` (model outputs, takes `judge` as explicit param) + `check_json_schema_rich` (state updates with failure path) + `basic_schema_check` / `basic_schema_check_with_path` | 470 |
 | `scripts/common.py` | Python 3.10+ version gate + Creator path discovery + `find_workspace` + `parse_skill_md` + `validate_frontmatter` + `require_creator` / `CreatorNotFoundError` | 428 |
 | `scripts/aggregate_results.py` | `parse_results_tsv` + `calculate_summary` + `format_markdown` + `run_benchmark` A/B + `format_benchmark_markdown` | 389 |
-| `scripts/evaluator_backends.py` | `CreatorEvaluator` + `ScriptEvaluator` + `PytestEvaluator` (lazy-loaded by factory; forwards `cases_dir` kwarg to LocalEvaluator.full_eval) | 321 |
+| `scripts/evaluator_backends.py` | `CreatorEvaluator` + `ScriptEvaluator` + `PytestEvaluator` (lazy-loaded by factory; forwards `cases_dir` kwarg to LocalEvaluator.full_eval) + `BehavioralEvaluator(LocalEvaluator)` (Module A: routes each assertion to the real transcript or the static skill doc corpus based on the case's `target` field) | 619 |
 | `scripts/run_l1_gate.py` | L1 quick-gate CLI helper + `run_l1_gate` library function + P0 quality rules (SEC001-006, S003+, S004+, S007, TD011, C001, C005) with code-markup stripping | 487 |
 | `scripts/binary_judge.py` | `BinaryLLMJudge` class — atomic YES/NO LLM calls with `judge_with_reasoning` rationale capture (paper §3 "model outputs" trace component); lazy-imports `_call_llm` from `llm` module with stdlib-only fallback | 190 |
 | `scripts/setup_workspace.py` | `setup_workspace` library + CLI entry — creates workspace/evals/checks/ layout + evolve_plan.md template | 172 |
-| `scripts/cleanup.py` | `_iter_num` (shared numeric-sort helper) + `cleanup_best_versions` + `cleanup_eval_outputs` + `_try_launch_eval_viewer` (reads latest meta.json) | 159 |
+| `scripts/isolation.py` | Module B proposer/evaluator isolation: `build_diagnoser_prompt` / `build_diagnoser_task_spec` + `build_mutator_prompt` / `build_mutator_task_spec` + `parse_diagnosis_response` / `parse_mutation_response` — narrow function signatures keep the diagnoser blind to holdout evidence and the mutator blind to raw diagnosis text | 310 |
+| `scripts/behavioral_runner.py` | Module A behavioral runner: `build_behavioral_prompt` / `build_behavioral_task_spec` (conversation mode) + `run_case_behaviorally` (CLI subprocess mode via `llm.py`'s `LLM_BACKENDS`) + `build_transcript_from_text` — produces a real execution transcript instead of grading the static skill corpus | 264 |
+| `scripts/verifier_panel.py` | Module D adversarial review panel: `CHECKERS` (overfit / assertion_gaming / structural) + per-checker suspicion-prompt builders + `build_verifier_task_spec` + `aggregate_verdicts` — independent post-gate re-check of a candidate before it's treated as a keep | 245 |
+| `scripts/cleanup.py` | `_iter_num` (shared numeric-sort helper) + `cleanup_best_versions` + `cleanup_eval_outputs` + `_try_launch_eval_viewer` (reads latest meta.json) | 334 |
+| `scripts/migrate_to_behavioral.py` | CLI script: back-fills `target: "output" \| "skill_doc"` onto an existing evals.json for `BehavioralEvaluator`; writes a sibling `.migrated.json` + `migration_report.md` for human review, never overwrites the input | 166 |
 | `scripts/run_l2_eval.py` | L2 eval library helpers: `load_gt` + `aggregate_grades` + `calculate_stats` (write_benchmark / write_grading removed in the Meta-Harness refactor — now handled by evolve_loop.write_meta_json + persist_cases) | 139 |
 | `scripts/gate.py` | `phase_6_gate_decision` (pure function, stdlib only) | 134 |
 | `scripts/__init__.py` | (empty marker file) | 1 |
@@ -468,6 +472,7 @@ Two deliberate cycle-breakers:
 | `references/mutation_policy.md` | Layered mutation strategy | When deciding what to change |
 | `references/memory_schema.md` | results.tsv + experiments.jsonl schema | When reading/writing memory |
 | `references/creator_integration.md` | Integration protocol with Creator | When invoking Creator capabilities |
+| `references/isolation_protocol.md` | Module B proposer/evaluator isolation protocol (narrow function signatures for diagnoser/mutator) | When wiring Phase 2/3 through `isolation.py` |
 | `agents/search_agent.md` | Variant generation protocol | During Phase 2 (Ideate) |
 | `agents/grader_agent.md` | Grading protocol (quick ref; full version in Creator) | During evaluation grading |
 | `agents/comparator_agent.md` | Blind A/B comparison (quick ref; full version in Creator) | During Benchmark mode |
