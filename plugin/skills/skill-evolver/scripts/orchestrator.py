@@ -39,7 +39,7 @@ from common import require_creator, CreatorNotFoundError, find_workspace
 from aggregate_results import parse_results_tsv, calculate_summary
 from evaluators import get_evaluator, parse_evaluator_from_plan, Evaluator
 from gate import phase_6_gate_decision
-from llm import phase_2_3_ideate_and_modify, auto_construct_gt
+from llm import phase_2_3_ideate_and_modify, phase_6_5_review, auto_construct_gt
 from cleanup import (
     cleanup_best_versions, cleanup_eval_outputs, _try_launch_eval_viewer,
     _prepare_viewer_data,
@@ -78,6 +78,23 @@ def _eval_holdout_or_none(evaluator, skill_path: Path, gt_path: Path,
     if workspace is not None and iteration is not None:
         persist_holdout_cases(workspace, iteration, result.get("cases"))
     return result.get("pass_rate")
+
+
+def _git_diff_for_commit(skill_path: Path, commit_hash: str) -> str:
+    """Return the diff a single commit introduced, for Phase 6.5's
+    verifier panel — the panel reviews what a candidate actually
+    changed, not a description of what it claims to have changed.
+
+    Returns an empty string (not an exception) if the diff can't be
+    produced (e.g. the commit is the repo's first commit and has no
+    parent) — Phase 6.5 still runs with an empty diff rather than
+    aborting the whole iteration over a diff-formatting failure.
+    """
+    result = subprocess.run(
+        ["git", "diff", f"{commit_hash}~1", commit_hash],
+        cwd=str(skill_path), capture_output=True, text=True, timeout=10,
+    )
+    return result.stdout if result.returncode == 0 else ""
 
 
 # ─────────────────────────────────────────────
@@ -312,6 +329,26 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
         for r in gate.get("reasons", []):
             log(f"    · {r}")
 
+        # Phase 6.5: Adversarial review panel — only spent on candidates
+        # that already look like a keep. Three independent verifiers
+        # (overfit / assertion_gaming / structural) can still veto a
+        # numeric-gate pass; a "skipped" panel result (>=2 verifier
+        # calls failed) falls back to the numeric gate's own decision
+        # rather than blocking the iteration on a broken review step.
+        adversarial_result = None
+        if decision == "keep":
+            log("Phase 6.5: Adversarial review")
+            diff = _git_diff_for_commit(skill_path, commit["commit_hash"])
+            adversarial_result = phase_6_5_review(
+                skill_path, diff,
+                {"dev_pass_rate": new_rate, "holdout_pass_rate": new_holdout,
+                 "baseline_dev_pass_rate": best_rate,
+                 "baseline_holdout_pass_rate": best_holdout},
+                model=model)
+            log(f"  Panel: {adversarial_result['decision']} — {adversarial_result['reasoning']}")
+            if adversarial_result["decision"] == "reject":
+                decision = "discard"
+
         if decision == "keep":
             best_rate = new_rate
             if new_holdout is not None:
@@ -360,6 +397,7 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
                         "tokens": new_eval.get("tokens", 0),
                         "duration": new_eval.get("duration", 0.0),
                         "diagnosis": result_23.get("diagnosis", ""),
+                        "adversarial_review": adversarial_result,
                     },
                     eval_result=new_eval,
                     split="dev")
