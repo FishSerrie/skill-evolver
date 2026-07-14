@@ -55,24 +55,53 @@ def phase_6_gate_decision(current_metrics: dict, baseline_metrics: dict,
     if dev_saturated:
         dev_no_regress = cur_pr >= base_pr - noise_threshold
         if has_holdout:
-            holdout_improved = cur_ho >= base_ho + min_delta
-            quality_ok = dev_no_regress and holdout_improved
-            if quality_ok:
-                reasons.append(
-                    f"quality (dev saturated): dev held at {cur_pr:.3f}, "
-                    f"holdout {cur_ho:.3f} >= {base_ho:.3f} + {min_delta}"
-                )
-            else:
-                if not dev_no_regress:
+            # Both dev AND holdout already at the ceiling: demanding
+            # holdout_improved (below) is mathematically impossible once
+            # base_ho >= 1.0 - noise_threshold, since pass_rate cannot
+            # exceed 1.0 — that made "keep" permanently unreachable for
+            # any future change, including safe, no-regression fixes
+            # (docs, slimming) this skill's own evolve_plan.md explicitly
+            # recommends once saturated. Degrade one step further: the
+            # only honest bar left is "did not regress on either split".
+            holdout_saturated = base_ho >= 1.0 - noise_threshold
+            if holdout_saturated:
+                holdout_no_regress = cur_ho >= base_ho - noise_threshold
+                quality_ok = dev_no_regress and holdout_no_regress
+                if quality_ok:
                     reasons.append(
-                        f"quality FAIL (dev saturated): dev regressed "
-                        f"{cur_pr:.3f} < {base_pr:.3f} - {noise_threshold}"
+                        f"quality (dev+holdout saturated): both held at "
+                        f"ceiling (dev {cur_pr:.3f}, holdout {cur_ho:.3f})"
                     )
                 else:
+                    if not dev_no_regress:
+                        reasons.append(
+                            f"quality FAIL (dev+holdout saturated): dev "
+                            f"regressed {cur_pr:.3f} < {base_pr:.3f} - {noise_threshold}"
+                        )
+                    else:
+                        reasons.append(
+                            f"quality FAIL (dev+holdout saturated): holdout "
+                            f"regressed {cur_ho:.3f} < {base_ho:.3f} - {noise_threshold}"
+                        )
+            else:
+                holdout_improved = cur_ho >= base_ho + min_delta
+                quality_ok = dev_no_regress and holdout_improved
+                if quality_ok:
                     reasons.append(
-                        f"quality FAIL (dev saturated): holdout "
-                        f"{cur_ho:.3f} < {base_ho:.3f} + {min_delta}"
+                        f"quality (dev saturated): dev held at {cur_pr:.3f}, "
+                        f"holdout {cur_ho:.3f} >= {base_ho:.3f} + {min_delta}"
                     )
+                else:
+                    if not dev_no_regress:
+                        reasons.append(
+                            f"quality FAIL (dev saturated): dev regressed "
+                            f"{cur_pr:.3f} < {base_pr:.3f} - {noise_threshold}"
+                        )
+                    else:
+                        reasons.append(
+                            f"quality FAIL (dev saturated): holdout "
+                            f"{cur_ho:.3f} < {base_ho:.3f} + {min_delta}"
+                        )
         else:
             # No holdout data — dev is saturated and we have no other signal
             # to improve. The only honest call is "no signal, do not risk".
@@ -107,13 +136,22 @@ def phase_6_gate_decision(current_metrics: dict, baseline_metrics: dict,
 
     cur_tokens = current_metrics.get("tokens_mean", 0)
     base_tokens = baseline_metrics.get("tokens_mean", 1)
-    cost_ok = base_tokens == 0 or cur_tokens <= base_tokens * (1 + max_token_increase)
+    # `base_tokens == 0` is not just a divide-by-zero guard — treating it
+    # as "skip the check" silently disables cost gating whenever the
+    # active evaluator reports an honest zero (behavioral_runner.py's
+    # CLI path always does, by design, not as an estimate). With the same
+    # evaluator on both sides, cur_tokens is also 0 and the two branches
+    # agree anyway; this only matters — and was silently wrong — when a
+    # nonzero cost appears against a zero baseline (e.g. an evaluator
+    # switch mid-run). No baseline signal to compare against, so require
+    # the candidate to also report zero rather than passing unconditionally.
+    cost_ok = cur_tokens == 0 if base_tokens == 0 else cur_tokens <= base_tokens * (1 + max_token_increase)
     if not cost_ok:
         reasons.append(f"cost FAIL: {cur_tokens} > {base_tokens} * {1 + max_token_increase}")
 
     cur_dur = current_metrics.get("duration_mean", 0)
     base_dur = baseline_metrics.get("duration_mean", 1)
-    latency_ok = base_dur == 0 or cur_dur <= base_dur * (1 + max_latency_increase)
+    latency_ok = cur_dur == 0 if base_dur == 0 else cur_dur <= base_dur * (1 + max_latency_increase)
     if not latency_ok:
         reasons.append(f"latency FAIL: {cur_dur:.1f} > {base_dur:.1f} * {1 + max_latency_increase}")
 

@@ -46,11 +46,29 @@ def gate_decision(current, baseline, policy):
             >= baseline.dev_pass_rate - policy.noise_threshold
         )
         if has_holdout:
-            holdout_improved = (
-                current.holdout_pass_rate
-                >= baseline.holdout_pass_rate + policy.min_delta
+            # If holdout is ALSO already saturated, demanding
+            # holdout_improved below is equally impossible — degrade one
+            # more step to "no regression on either split" instead of
+            # "improve the unimprovable" (real bug found via a live
+            # evolve run: this used to make "keep" permanently
+            # unreachable once both splits hit the ceiling, including
+            # for safe, no-regression doc/slimming fixes this skill's
+            # own evolve_plan.md recommends once saturated).
+            holdout_saturated = (
+                baseline.holdout_pass_rate >= 1.0 - policy.noise_threshold
             )
-            quality_ok = dev_no_regress and holdout_improved
+            if holdout_saturated:
+                holdout_no_regress = (
+                    current.holdout_pass_rate
+                    >= baseline.holdout_pass_rate - policy.noise_threshold
+                )
+                quality_ok = dev_no_regress and holdout_no_regress
+            else:
+                holdout_improved = (
+                    current.holdout_pass_rate
+                    >= baseline.holdout_pass_rate + policy.min_delta
+                )
+                quality_ok = dev_no_regress and holdout_improved
         else:
             # No holdout signal and dev is saturated — no honest way to
             # judge improvement, so don't risk it.
@@ -65,13 +83,21 @@ def gate_decision(current, baseline, policy):
         current.trigger_f1
         >= baseline.trigger_f1 * (1 - policy.trigger_tolerance)
     )
+    # base == 0 is not a "skip the check" signal — it means there is no
+    # baseline cost/latency signal to compare against (e.g. an evaluator
+    # that honestly reports zero tokens, not an estimate). Unconditionally
+    # passing here used to silently disable cost/latency gating whenever
+    # that happened (real bug found via adversarial review) — require the
+    # candidate to also report zero rather than accepting any value.
     cost_ok = (
-        current.tokens_mean
-        <= baseline.tokens_mean * (1 + policy.max_token_increase)
+        current.tokens_mean == 0
+        if baseline.tokens_mean == 0 else
+        current.tokens_mean <= baseline.tokens_mean * (1 + policy.max_token_increase)
     )
     latency_ok = (
-        current.duration_mean
-        <= baseline.duration_mean * (1 + policy.max_latency_increase)
+        current.duration_mean == 0
+        if baseline.duration_mean == 0 else
+        current.duration_mean <= baseline.duration_mean * (1 + policy.max_latency_increase)
     )
     regression_ok = (
         current.regression_pass
