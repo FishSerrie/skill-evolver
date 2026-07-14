@@ -98,5 +98,41 @@ class AggregateVerdictsMultiErrorTests(unittest.TestCase):
         self.assertIn("2/3", result["reasoning"])
 
 
+class AggregateVerdictsRobustnessTests(unittest.TestCase):
+    """Real bugs found via adversarial review: aggregate_verdicts used
+    to accept any-length input and hardcode "3" into the reasoning
+    text regardless of actual list length, and silently treated any
+    verdict value outside pass/reject/error as an implicit pass."""
+
+    def test_wrong_length_raises_value_error(self):
+        with self.assertRaises(ValueError):
+            verifier_panel.aggregate_verdicts([_verdict("overfit", "pass")])
+
+    def test_empty_list_raises_value_error(self):
+        with self.assertRaises(ValueError):
+            verifier_panel.aggregate_verdicts([])
+
+    def test_too_many_verdicts_raises_value_error(self):
+        with self.assertRaises(ValueError):
+            verifier_panel.aggregate_verdicts(
+                [_verdict("overfit", "pass")] * 5)
+
+    def test_unrecognized_verdict_value_is_treated_as_error_not_pass(self):
+        verdicts = [_verdict("overfit", "maybe"), _verdict("assertion_gaming", "reject"),
+                   _verdict("structural", "pass")]
+        result = verifier_panel.aggregate_verdicts(verdicts)
+        # 1 error (the "maybe") + 1 reject + 1 pass among the clean two
+        # -> degrades to the 2-remaining-disagree conservative-reject rule,
+        # NOT a silent pass from treating "maybe" as an implicit pass.
+        self.assertEqual(result["decision"], "reject")
+
+    def test_reasoning_denominator_matches_actual_clean_count(self):
+        verdicts = [_verdict("overfit", "pass"), _verdict("assertion_gaming", "pass"),
+                   _verdict("structural", "pass")]
+        result = verifier_panel.aggregate_verdicts(verdicts)
+        self.assertIn("3/3", result["reasoning"])
+        self.assertNotIn("0/3", result["reasoning"])
+
+
 if __name__ == "__main__":
     unittest.main()

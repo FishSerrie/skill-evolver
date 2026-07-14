@@ -195,7 +195,29 @@ def aggregate_verdicts(verdicts: list) -> dict:
     slip through — see architecture.md Module D's "known residual
     risk" note. This is a known limitation, not a claim this function
     disproves.
+
+    Raises ``ValueError`` if ``verdicts`` does not have exactly 3
+    entries — the majority-of-3 rule below is only meaningful for a
+    3-verifier panel; silently reasoning about "2/3" against a list of
+    a different length would fabricate a wrong record rather than fail
+    loudly (real bug found via adversarial review: this used to accept
+    any length and hardcode "3" into the reasoning string regardless).
+    Any verdict value outside ``{"pass", "reject", "error"}`` is
+    treated as ``"error"`` — same defensive-default posture as
+    :func:`parse_verifier_response`, so a caller that bypasses that
+    parser can't smuggle an unrecognized value through as an implicit
+    pass.
     """
+    if len(verdicts) != 3:
+        raise ValueError(
+            f"aggregate_verdicts expects exactly 3 verdicts, got {len(verdicts)}")
+
+    verdicts = [
+        v if v.get("verdict") in ("pass", "reject", "error")
+        else {**v, "verdict": "error"}
+        for v in verdicts
+    ]
+
     errors = [v for v in verdicts if v.get("verdict") == "error"]
     clean = [v for v in verdicts if v.get("verdict") != "error"]
 
@@ -235,11 +257,11 @@ def aggregate_verdicts(verdicts: list) -> dict:
         return {
             "decision": "reject",
             "verdicts": verdicts,
-            "reasoning": f"{rejects}/3 verifiers rejected — {reasons}",
+            "reasoning": f"{rejects}/{len(clean)} verifiers rejected — {reasons}",
         }
 
     return {
         "decision": "pass",
         "verdicts": verdicts,
-        "reasoning": f"{3 - rejects}/3 verifiers passed the candidate",
+        "reasoning": f"{len(clean) - rejects}/{len(clean)} verifiers passed the candidate",
     }
