@@ -191,6 +191,14 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
 
     best_rate = baseline_rate
     best_holdout = baseline_holdout
+    # Real bug found via adversarial review: cost/latency baseline used
+    # to stay frozen at whatever Phase 0 measured, forever, even as
+    # best_rate/best_holdout tracked the current best version on every
+    # keep. gate_rules.md's own contract says "baseline: evaluation
+    # results for the CURRENT BEST version" — that was only true for 2
+    # of 5 gate dimensions. Track these the same way quality is tracked.
+    best_tokens = baseline.get("tokens", 0)
+    best_duration = baseline.get("duration", 0.0)
     current_layer = "body"
 
     for iteration in range(1, max_iterations + 1):
@@ -331,8 +339,8 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
              "regression_pass": 1.0},
             {"pass_rate": best_rate, "holdout_pass_rate": best_holdout,
              "trigger_f1": 1.0,
-             "tokens_mean": baseline.get("tokens", 0),
-             "duration_mean": baseline.get("duration", 0.0),
+             "tokens_mean": best_tokens,
+             "duration_mean": best_duration,
              "regression_pass": 1.0},
             {"min_delta": 0.01, "noise_threshold": 0.005}
         )
@@ -378,6 +386,8 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
             best_rate = new_rate
             if new_holdout is not None:
                 best_holdout = new_holdout
+            best_tokens = new_eval.get("tokens", 0)
+            best_duration = new_eval.get("duration", 0.0)
             save_best_version(skill_path, workspace, iteration)
             log(f"  KEEP — new best: dev {best_rate:.0%}"
                 + (f", holdout {best_holdout:.0%}" if best_holdout is not None else ""))
