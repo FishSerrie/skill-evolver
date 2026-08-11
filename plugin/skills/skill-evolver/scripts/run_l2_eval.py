@@ -20,7 +20,6 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from common import require_creator
 
 
 def load_gt(gt_path: Path, split: str | None = "dev") -> list[dict]:

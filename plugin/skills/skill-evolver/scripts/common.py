@@ -398,10 +398,122 @@ def parse_skill_md(skill_path: Path) -> tuple[str, str, str]:
     return name, description, content
 
 
-def validate_frontmatter(skill_path: Path) -> tuple[bool, str]:
-    """Validate SKILL.md YAML frontmatter.
+# ─────────────────────────────────────────────
+# Skill layout — the single definition
+# ─────────────────────────────────────────────
+#
+# Which subdirectories a skill is made of used to be written out
+# separately in three places (the corpus loader, the snapshot builder,
+# and the target's structural metrics), and the copies had already
+# drifted apart — two listed references+agents, the third also listed
+# scripts. Any code that needs to know a skill's shape reads these
+# instead.
 
-    Returns (is_valid, message).
+# Directories whose *.md files Claude reads as part of the skill. These
+# form the evaluation corpus: an evaluator scoring only SKILL.md would
+# miss content that legitimately lives in references/.
+SKILL_PROSE_DIRS = ("references", "agents")
+
+# Directories holding executable helpers. Excluded from the prose corpus
+# (they are not read as instructions) but counted in structural metrics,
+# because moving bulk into a script is still a change in total size.
+SKILL_CODE_DIRS = ("scripts",)
+
+SKILL_FILE = "SKILL.md"
+
+
+def iter_skill_prose(skill_path: Path):
+    """Yield ``(relative_path, absolute_path)`` for a skill's prose files.
+
+    Ordered deterministically (``SKILL.md`` first, then each directory's
+    files sorted) so that anything built from this — a concatenated
+    corpus, a file list — is reproducible across runs. A corpus whose
+    ordering varied would make two evaluations of an unchanged skill
+    differ, and the loop would read that as a real score change.
+    """
+    skill_md = skill_path / SKILL_FILE
+    if skill_md.is_file():
+        yield Path(SKILL_FILE), skill_md
+    for subdir in SKILL_PROSE_DIRS:
+        dir_path = skill_path / subdir
+        if not dir_path.is_dir():
+            continue
+        for md in sorted(dir_path.rglob("*.md")):
+            if md.is_file():
+                yield md.relative_to(skill_path), md
+
+
+def build_skill_corpus(skill_path: Path) -> str:
+    """Concatenate a skill's prose into the text evaluators score against.
+
+    The ``### <rel-path> ###`` header format is load-bearing, not
+    cosmetic: ``trace_enrichment.locate_in_corpus`` parses it to map a
+    character offset in this concatenation back to a ``{file, line}``
+    pointer. Change the format and assertion failures stop reporting
+    where they happened.
+    """
+    return "\n\n".join(
+        f"### {rel} ###\n{abs_path.read_text()}"
+        for rel, abs_path in iter_skill_prose(skill_path)
+    )
+
+
+#─────────────────────────────────────────────
+# Frontmatter validation
+# ─────────────────────────────────────────────
+
+# Frontmatter keys the skill spec allows. Anything else is a typo or a
+# stale field and fails validation — same allow-list Creator's
+# quick_validate.py enforces, kept here so the check does not depend on
+# Creator being installed.
+ALLOWED_FRONTMATTER_KEYS = frozenset({
+    "name", "description", "license", "allowed-tools", "metadata",
+    "compatibility",
+})
+
+# Spec limits (chars). Mirrored from the skill spec, not from Creator's
+# implementation — these are the published limits, Creator just happens
+# to check the same ones.
+MAX_NAME_CHARS = 64
+MAX_DESCRIPTION_CHARS = 1024
+MAX_COMPATIBILITY_CHARS = 500
+
+
+def _frontmatter_top_level_keys(frontmatter_text: str) -> list[str]:
+    """Return top-level keys of a frontmatter block, stdlib only.
+
+    Deliberately does NOT use PyYAML. Creator's quick_validate.py imports
+    yaml, which makes it hard-fail on any interpreter without PyYAML
+    installed — that is exactly the coupling this module exists to avoid.
+    We only need top-level key names, so a line scan is sufficient:
+    indented lines are nested values,``- `` lines are list items, and
+    block scalars (``key: |``) have their bodies skipped by the same
+    indent rule.
+    """
+    keys = []
+    for line in frontmatter_text.split("\n"):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        # Indented → nested under the previous top-level key, not a key.
+        if line[0] in (" ", "\t"):
+            continue
+        if line.lstrip().startswith("- "):
+            continue
+        if ":" not in line:
+            continue
+        keys.append(line.split(":", 1)[0].strip())
+    return keys
+
+
+def validate_frontmatter(skill_path: Path) -> tuple[bool, str]:
+    """Validate SKILL.md YAML frontmatter against the skill spec.
+
+    Returns (is_valid, message). Enforces the full rule set without
+    requiring skill-creator or PyYAML: presence, the allowed-key
+    allow-list, kebab-case naming, and the spec's length/character
+    limits.``run_l1_gate.creator_validate`` runs Creator's own
+    validator as a redundant cross-check when Creator happens to be
+    installed, but this function is the authoritative one.
     """
     skill_md = skill_path / "SKILL.md"
     if not skill_md.exists():
@@ -420,9 +532,47 @@ def validate_frontmatter(skill_path: Path) -> tuple[bool, str]:
     except ValueError as e:
         return False, str(e)
 
+    unexpected = sorted(
+        set(_frontmatter_top_level_keys(match.group(1))) - ALLOWED_FRONTMATTER_KEYS
+    )
+    if unexpected:
+        return False, (
+            f"Unexpected key(s) in SKILL.md frontmatter: {', '.join(unexpected)}. "
+            f"Allowed properties are: {', '.join(sorted(ALLOWED_FRONTMATTER_KEYS))}"
+        )
+
     if not name:
         return False, "Missing 'name' in frontmatter"
     if not description:
         return False, "Missing 'description' in frontmatter"
+
+    # Name must be kebab-case: the skill name becomes a directory name and
+    # a CLI-addressable identifier, so uppercase/underscores/spaces break
+    # callers on case-insensitive filesystems.
+    if not re.match(r"^[a-z0-9-]+$", name):
+        return False, (
+            f"Name '{name}' should be kebab-case "
+            "(lowercase letters, digits, and hyphens only)"
+        )
+    if name.startswith("-") or name.endswith("-") or "--" in name:
+        return False, (
+            f"Name '{name}' cannot start/end with a hyphen or contain "
+            "consecutive hyphens"
+        )
+    if len(name) > MAX_NAME_CHARS:
+        return False, (
+            f"Name is too long ({len(name)} characters). "
+            f"Maximum is {MAX_NAME_CHARS}."
+        )
+
+    # Angle brackets in description break the available_skills listing the
+    # model reads, so they are rejected outright rather than escaped.
+    if "<" in description or ">" in description:
+        return False, "Description cannot contain angle brackets (< or >)"
+    if len(description) > MAX_DESCRIPTION_CHARS:
+        return False, (
+            f"Description is too long ({len(description)} characters). "
+            f"Maximum is {MAX_DESCRIPTION_CHARS}."
+        )
 
     return True, "Valid"

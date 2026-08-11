@@ -25,8 +25,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from common import require_creator, CreatorNotFoundError, find_workspace, validate_frontmatter, parse_skill_md
+from common import find_workspace, validate_frontmatter, parse_skill_md
 from aggregate_results import parse_results_tsv, calculate_summary
+# Re-exported as well as used: external callers have long done
+# `from evolve_loop import write_cases_to_dir`, and the function moving to
+# its own module is not a reason to break them.
+from case_store import write_cases_to_dir
 from evaluators import get_evaluator, parse_evaluator_from_plan, Evaluator
 from gate import phase_6_gate_decision  # extracted in iter 15
 from llm import (  # extracted in iter 16
@@ -41,6 +45,61 @@ from cleanup import (  # extracted in iter 17
 
 
 # ─────────────────────────────────────────────
+# Git scope
+#
+# Every git command below is limited to the artifact's own pathspec, and
+# that is the single property the loop's safety rests on. It is worth
+# stating why, because the unscoped version looked correct and destroyed
+# user work:
+#
+#   `git add -u` with no pathspec stages the whole working tree, not the
+#   current directory's subtree (Git 2.0+). So a loop that changed
+#   `prompts/answer.md` would also stage a user's unrelated edit to
+#   `src/app.py`, commit both, and — when the gate rejected the
+#   candidate — revert both. The user's work was then in neither the
+#   working tree nor the index, and nothing could recover it.
+#
+# The invariant that prevents this is: **the experiment commit contains
+# nothing but the artifact.** Undoing a commit is only safe if the commit
+# had nothing of anyone else's in it, so the guarantee has to be
+# established when committing, not worked around when reverting.
+#
+# Two consequences that are easy to get wrong:
+#
+#   * Narrowing `git add` is NOT enough. `git commit` commits the entire
+#     index, including paths the *user* staged themselves before the run.
+#     So the commit itself must carry the pathspec (`git commit -- <path>`),
+#     which bypasses the index for everything outside it.
+#   * The dirty-tree precondition must check **exactly the paths that get
+#     staged** — no wider, no narrower. Wider, and any unrelated edit
+#     anywhere in the user's repository refuses to let the loop run at
+#     all. Narrower, and something reachable by the commit was never
+#     checked. Equality is what makes "the commit contains only the
+#     artifact" true.
+# ─────────────────────────────────────────────
+
+def _git(args: list[str], target, timeout: int = 10):
+    """Run a git command at the target's repository root.
+
+    Centralised for one reason: ``cwd`` must be a directory, and the
+    engine used to pass the artifact path directly. For a skill that is
+    a directory and it worked; for a prompt file it raised
+    ``NotADirectoryError``, which several call sites caught and degraded
+    to "no history" or "no untracked files" — so a file target reported
+    an empty git log and an empty untracked set rather than an error.
+
+    Running at ``vcs_root`` also makes every path in git's output
+    repository-relative and therefore directly comparable with the
+    pathspecs passed in, instead of relative to whichever directory the
+    command happened to run in.
+    """
+    return subprocess.run(
+        ["git"] + args, cwd=str(target.vcs_root),
+        capture_output=True, text=True, timeout=timeout,
+    )
+
+
+# ─────────────────────────────────────────────
 # Phase 0: Setup (fully automated)
 # ─────────────────────────────────────────────
 
@@ -51,28 +110,33 @@ def phase_0_setup(skill_path: Path, gt_path: Path,
     On first use, auto-detects creator tools (skill-creator, third-party-creator, etc.)
     and configures the evaluation pipeline accordingly.
 
-    Enforces the "clean git state" precondition from
-    ``references/evolve_protocol.md`` Phase 0 — without it,
-    ``phase_4_commit``'s ``git add -A`` would sweep the user's unrelated
-    uncommitted edits into an experiment commit, and a subsequent
-    ``git revert`` (after a discard) would silently delete that work.
+    Enforces the "clean artifact" precondition from
+    ``references/evolve_protocol.md`` Phase 0. The check is scoped to the
+    artifact rather than the whole repository, and the two facts are
+    linked: it must cover exactly what ``phase_4_commit`` stages, because
+    a discarded iteration undoes that commit. Checking *more* than the
+    commit touches would refuse to run over unrelated edits elsewhere in
+    the user's repository — which is its own kind of broken — and
+    checking *less* would leave something in the commit that nobody
+    verified was ours.
 
     Returns: {"workspace", "evolve_dir", "plan_path", "baseline_needed", "creator_config"}
     """
     from setup_workspace import setup_workspace  # noqa: sibling import
     from common import setup_creator_config
+    from target import resolve_target  # noqa: sibling import
 
-    # Precondition: skill dir must be under git AND have a clean working
-    # tree. Four-step decision tree mirrors evolve_protocol.md Phase 4:
-    #   1. Already under git, clean → proceed
-    #   2. Already under git, dirty → refuse (would co-opt user's work)
+    target = resolve_target(skill_path)
+    pathspec = target.vcs_pathspec
+
+    # Precondition: the artifact must be under git AND its own paths must
+    # be clean. Four-step decision tree mirrors evolve_protocol.md Phase 4:
+    #   1. Already under git, artifact clean → proceed
+    #   2. Already under git, artifact dirty → refuse (would co-opt user's work)
     #   3. Not under git, git installed → auto-init + initial commit
     #   4. Git not installed → refuse with install instructions
     try:
-        status = subprocess.run(
-            ["git", "status", "--porcelain"],
-            cwd=str(skill_path), capture_output=True, text=True, timeout=10,
-        )
+        status = _git(["status", "--porcelain", "--", pathspec], target)
     except FileNotFoundError as e:
         raise RuntimeError(
             f"Phase 0: git is not installed. Install git and retry:\n"
@@ -82,48 +146,51 @@ def phase_0_setup(skill_path: Path, gt_path: Path,
             f"  Windows: https://git-scm.com/download/win"
         ) from e
     except (subprocess.TimeoutExpired, OSError) as e:
-        raise RuntimeError(f"Phase 0: cannot run `git status` in {skill_path}: {e}") from e
+        raise RuntimeError(
+            f"Phase 0: cannot run `git status` in {target.vcs_root}: {e}"
+        ) from e
 
     if status.returncode != 0:
         # Not a git repo. Auto-init per protocol (step 3): git is
         # installed (we just ran it successfully enough to get a
         # non-zero exit), the user has authorized operating on this
-        # skill dir, and no prior commit means no user work to lose.
+        # artifact, and no prior commit means no user work to lose.
+        #
+        # Scoped to the artifact for the same reason every other command
+        # is: `git add .` here would make the initial commit contain
+        # whatever else happens to sit beside the artifact, and every
+        # later revert would then be able to reach it.
         try:
-            subprocess.run(
-                ["git", "init"], cwd=str(skill_path),
-                capture_output=True, text=True, timeout=10, check=True,
-            )
-            subprocess.run(
-                ["git", "add", "."], cwd=str(skill_path),
-                capture_output=True, text=True, timeout=10, check=True,
-            )
-            subprocess.run(
-                ["git", "commit", "-m", "chore: init git for evolve tracking"],
-                cwd=str(skill_path), capture_output=True, text=True,
-                timeout=10, check=True,
-            )
+            _git(["init"], target).check_returncode()
+            _git(["add", "--", pathspec], target).check_returncode()
+            _git(
+                ["commit", "-m", "chore: init git for evolve tracking",
+                 "--", pathspec],
+                target,
+            ).check_returncode()
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
             raise RuntimeError(
-                f"Phase 0: auto-init failed in {skill_path}: {e}\n"
-                f"Run manually: git init && git add . && git commit -m 'init'"
+                f"Phase 0: auto-init failed in {target.vcs_root}: {e}\n"
+                f"Run manually: git init && git add {pathspec} && "
+                f"git commit -m 'init'"
             ) from e
     elif status.stdout.strip():
-        # Already a git repo AND dirty → refuse. phase_4_commit's
-        # `git add -u` would pull tracked-file dirt into the first
-        # experiment commit, and a discarded iteration's `git revert`
-        # would silently delete the user's work.
+        # Already a git repo AND the artifact is dirty → refuse. Those
+        # changes would land in the first experiment commit, and a
+        # discarded iteration's revert would then delete them. Note this
+        # reports only the artifact's own dirt: unrelated uncommitted
+        # work elsewhere in the repository is none of the loop's
+        # business, because nothing the loop commits can reach it.
         raise RuntimeError(
             f"Phase 0: {skill_path} has uncommitted changes. Commit or stash "
-            f"them before running evolve — otherwise `git add -u` in "
-            f"phase_4_commit would sweep tracked-file changes into the "
-            f"first experiment commit, and a discarded iteration would "
-            f"silently revert your work.\n\n"
+            f"them before running evolve — otherwise they would be swept "
+            f"into the first experiment commit, and a discarded iteration "
+            f"would revert them along with the experiment.\n\n"
             f"Dirty files:\n{status.stdout}"
         )
 
     ws = workspace or find_workspace(skill_path)
-    result = setup_workspace(skill_path, ws)
+    result = setup_workspace(target, ws)
 
     evolve_dir = Path(result["evolve_dir"])
     plan_path = evolve_dir / "evolve_plan.md"
@@ -160,15 +227,16 @@ def phase_1_review(workspace: Path, skill_path: Path) -> dict:
     Args:
         workspace: the evolve workspace containing results.tsv and
             experiments.jsonl.
-        skill_path: the skill directory under git. Required so the git
-            log read runs inside the actual repo; previous versions
-            passed ``workspace.parent`` here, which is the GRANDPARENT
-            of the skill and typically not a git repo at all, so the
-            git log silently returned empty and Phase 2 had no history.
+        skill_path: the artifact being optimized. Used to locate the
+            repository, so the git log read happens inside it; earlier
+            versions passed ``workspace.parent``, the GRANDPARENT of the
+            skill and typically not a repository at all, so the log came
+            back empty and Phase 2 had no history to reason from.
 
     Returns: {"iterations", "keeps", "discards", "stuck", "recent_failures",
               "successful_patterns", "current_best_metric", "git_log"}
     """
+    from target import resolve_target  # noqa: sibling import
 
     evolve_dir = workspace / "evolve"
     rows = parse_results_tsv(workspace)
@@ -197,18 +265,24 @@ def phase_1_review(workspace: Path, skill_path: Path) -> dict:
         if e.get("status") in ("discard", "crash")
     ][-5:]  # last 5 failures
 
-    # Try to get git log — must run inside the skill dir (the git repo),
-    # NOT in workspace.parent (the skill's grandparent, typically not a repo).
+    # Git history for the artifact only. Scoped with a pathspec for the
+    # same reason the staging is: on a repository that hosts more than
+    # the artifact, an unscoped log is mostly other people's commits,
+    # and Phase 2 would be diagnosing a history it did not create.
     git_log = ""
     try:
-        result = subprocess.run(
-            ["git", "log", "--oneline", "-15"],
-            capture_output=True, text=True, timeout=5,
-            cwd=str(skill_path),
+        target = resolve_target(skill_path)
+        result = _git(
+            ["log", "--oneline", "-15", "--", target.vcs_pathspec],
+            target, timeout=5,
         )
         if result.returncode == 0:
             git_log = result.stdout.strip()
-    except (subprocess.TimeoutExpired, OSError):
+    except (subprocess.TimeoutExpired, OSError, FileNotFoundError):
+        # Degrading to an empty log is acceptable here and nowhere else
+        # in this module: Phase 1's history is advisory input to a
+        # proposer, so a missing one costs quality. Contrast
+        # _list_untracked, where the same silence loses files.
         pass
 
     # Meta-Harness §2 filesystem access: give the proposer file paths,
@@ -366,136 +440,162 @@ def phase_1_review(workspace: Path, skill_path: Path) -> dict:
 # ─────────────────────────────────────────────
 
 def _list_untracked(skill_path: Path) -> set[str]:
-    """Return the set of untracked (but not ignored) file paths in the
-    skill directory, relative to skill_path.
+    """Untracked (not ignored) paths inside the artifact, repo-relative.
 
     Used by the orchestrator to snapshot the untracked set before and
-    after ``phase_2_3_ideate_and_modify`` so the diff can be passed to
-    ``phase_4_commit`` as ``new_files`` — the files the mutation
-    legitimately added and wants staged by name.
+    after the mutation runs, so the difference can be handed to
+    ``phase_4_commit`` as the files the mutation legitimately added.
+
+    Raises ``RuntimeError`` rather than returning an empty set when git
+    cannot be consulted. The empty set is a real answer — "the artifact
+    has no untracked files" — and returning it for "we could not look"
+    conflated two situations with opposite consequences: under the
+    previous behaviour a file target made this raise ``NotADirectoryError``
+    internally, the handler swallowed it, and every file a mutation added
+    was silently left out of the commit. The log still said the commit
+    succeeded, so the loop went on measuring a candidate whose new files
+    were never committed and would be deleted by the next revert.
+
+    Scoped to the artifact's pathspec, which is also what makes the
+    caller's inference sound. "Phase 0 verified a clean start, therefore
+    anything untracked now came from the mutation" only holds where
+    Phase 0 actually checked, and Phase 0 checks the artifact. Outside
+    it, a new file is just as likely to be the user's.
     """
+    from target import resolve_target  # noqa: sibling import
+
+    target = resolve_target(skill_path)
     try:
-        result = subprocess.run(
-            ["git", "ls-files", "--others", "--exclude-standard"],
-            cwd=str(skill_path), capture_output=True, text=True, timeout=10,
+        result = _git(
+            ["ls-files", "--others", "--exclude-standard",
+             "--", target.vcs_pathspec],
+            target,
         )
-        if result.returncode != 0:
-            return set()
-        return {line.strip() for line in result.stdout.splitlines() if line.strip()}
-    except (subprocess.TimeoutExpired, OSError):
-        return set()
+    except (subprocess.TimeoutExpired, OSError) as e:
+        raise RuntimeError(
+            f"cannot list untracked files under {skill_path}: {e}"
+        ) from e
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"git ls-files failed for {skill_path}: "
+            f"{result.stderr.strip() or f'exit {result.returncode}'}"
+        )
+    return {line.strip() for line in result.stdout.splitlines() if line.strip()}
 
 
 def phase_4_commit(skill_path: Path, layer: str, description: str,
                    new_files: list[str] | None = None) -> dict:
-    """Git add + commit the changes.
+    """Commit the artifact's changes, and nothing else.
 
-    Staging strategy (three layers of safety, accumulated across iters):
+    The commit is built with an explicit pathspec, which is the whole
+    safety mechanism:
 
-    * **Tracked modifications** — always staged via ``git add -u``
-      (iter 8 safety: never sweep untracked debris the user may have
-      dropped into the skill dir during the loop).
-    * **Mutation-added new files** — staged explicitly by name via
-      the ``new_files`` parameter. The caller (``run_evolve_loop``)
-      snapshots the untracked file set before and after
-      ``phase_2_3_ideate_and_modify`` and passes the diff here. This
-      closes iter 8's only remaining gap: Layer 3 mutations that add
-      a new helper script / reference file can now be committed
-      automatically without re-opening the ``git add -A`` footgun.
-    * **User-dropped debris** — files that appeared in the working
-      tree during the iteration but were NOT reported by the
-      orchestrator are left untouched. The Phase 0 clean-tree check
-      (iter 7 + iter 12) guarantees the starting state is empty, so
-      anything not in ``new_files`` is by elimination not from the
-      mutation.
+        git add   -- <new files>          # untracked additions, by name
+        git commit -m <msg> -- <pathspec> # artifact paths only
+
+    ``git commit -- <pathspec>`` rather than a plain ``git commit`` is
+    load-bearing, and the reason is easy to miss: a plain commit records
+    the entire index, so anything the *user* staged before the run —
+    their own ``git add`` of an unrelated file — would be committed as
+    part of the experiment. Narrowing ``git add`` alone does not prevent
+    that, because the problem is not what we stage but what is already
+    staged. A pathspec on the commit bypasses the index for everything
+    outside it, and leaves the user's staged work staged.
+
+    That is what makes a discarded iteration safe to undo. Undoing a
+    commit can only be scoped to the artifact if the commit was; see
+    :func:`git_revert_last`.
 
     Args:
-        skill_path: the skill directory under git.
+        skill_path: the artifact being optimized.
         layer: current mutation layer string (``description`` / ``body``
             / ``script``), used in the commit message prefix.
         description: one-sentence commit message body.
-        new_files: optional list of paths (relative to ``skill_path``)
-            that the mutation added. If provided, each is staged with
-            ``git add <path>`` alongside the ``git add -u`` for
-            tracked modifications. ``None`` or ``[]`` disables new-file
-            staging — the legacy pre-iter-25 behavior.
+        new_files: paths (repository-relative, as returned by
+            :func:`_list_untracked`) that the mutation added. Untracked
+            files need naming because a pathspec matches what git already
+            knows about; paths outside the artifact are refused rather
+            than staged.
 
     Returns: {"success", "commit_hash", "files_changed", "error"}
     """
+    from target import resolve_target  # noqa: sibling import
+
     try:
-        # Stage tracked modifications — iter 8 safety baseline.
-        subprocess.run(["git", "add", "-u"], cwd=str(skill_path),
-                       capture_output=True, timeout=10)
+        target = resolve_target(skill_path)
+        pathspec = target.vcs_pathspec
 
-        # Stage mutation-added new files explicitly by name (iter 25).
-        # Using explicit paths avoids `git add -A` (which would pull
-        # in any untracked file, breaking the iter 8 safety invariant)
-        # while still enabling Layer 3 new-file mutations.
-        if new_files:
-            for rel_path in new_files:
-                # Defensive: don't let a path traverse out of the skill
-                # dir via "..", and skip empties. Path.resolve() is
-                # intentionally NOT used — we want the user-supplied
-                # relative path to stay relative so git treats it
-                # correctly against cwd=skill_path.
-                if not rel_path or rel_path.startswith("/") or ".." in rel_path.split("/"):
-                    continue
-                subprocess.run(
-                    ["git", "add", "--", rel_path],
-                    cwd=str(skill_path),
-                    capture_output=True, text=True, timeout=10,
-                )
+        # Untracked additions must be named: a pathspec selects among
+        # paths git already tracks, so a brand-new file is invisible to
+        # `git commit -- <dir>` until it has been added once.
+        for rel_path in new_files or []:
+            if not _within_artifact(rel_path, target):
+                # Refused, not staged. Outside the artifact there is no
+                # basis for believing a new file came from the mutation
+                # rather than from the user, and committing it would put
+                # it within reach of a later revert.
+                continue
+            _git(["add", "--", rel_path], target)
 
-        # Check if there are changes
-        status = subprocess.run(["git", "status", "--porcelain"],
-                                cwd=str(skill_path), capture_output=True,
-                                text=True, timeout=10)
+        # Does the artifact have anything to commit? Scoped to the same
+        # pathspec the commit uses, so the answer describes exactly what
+        # is about to happen rather than the repository at large.
+        status = _git(["status", "--porcelain", "--", pathspec], target)
         if not status.stdout.strip():
             return {"success": False, "commit_hash": None,
                     "files_changed": [], "error": "No changes to commit"}
 
-        # Commit
         msg = f"experiment({layer}): {description}"
-        result = subprocess.run(
-            ["git", "commit", "-m", msg],
-            cwd=str(skill_path), capture_output=True, text=True, timeout=10,
-        )
-
+        result = _git(["commit", "-m", msg, "--", pathspec], target)
         if result.returncode != 0:
             return {"success": False, "commit_hash": None,
-                    "files_changed": [], "error": result.stderr.strip()}
+                    "files_changed": [],
+                    "error": (result.stderr.strip() or result.stdout.strip())}
 
-        # Get commit hash
-        hash_result = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            cwd=str(skill_path), capture_output=True, text=True, timeout=5,
-        )
-        commit_hash = hash_result.stdout.strip()
+        commit_hash = _git(
+            ["rev-parse", "--short", "HEAD"], target, timeout=5
+        ).stdout.strip()
 
-        # Get changed files
-        diff_result = subprocess.run(
-            ["git", "diff", "--name-only", "HEAD~1"],
-            cwd=str(skill_path), capture_output=True, text=True, timeout=5,
+        diff_result = _git(
+            ["diff", "--name-only", "HEAD~1", "--", pathspec],
+            target, timeout=5,
         )
         files = [f.strip() for f in diff_result.stdout.strip().split("\n") if f.strip()]
 
         return {"success": True, "commit_hash": commit_hash,
                 "files_changed": files, "error": None}
-    except (subprocess.TimeoutExpired, OSError) as e:
+    except (subprocess.TimeoutExpired, OSError, RuntimeError, ValueError) as e:
         return {"success": False, "commit_hash": None,
                 "files_changed": [], "error": str(e)}
+
+
+def _within_artifact(rel_path: str, target) -> bool:
+    """Whether ``rel_path`` (repository-relative) lies inside the artifact.
+
+    Rejects absolute paths and ``..`` traversal before resolving, so a
+    path cannot escape the artifact by being resolved somewhere else
+    first. The comparison is then made on resolved paths, because a
+    string prefix test would accept ``prompts/answer.md.bak`` as living
+    inside ``prompts/answer.md``.
+
+    A file-shaped artifact contains only itself. That is deliberate: a
+    sibling file the mutation dropped next to a prompt is outside the
+    region Phase 0 verified was clean, so there is no evidence it is
+    ours rather than the user's.
+    """
+    if not rel_path or rel_path.startswith("/") or ".." in rel_path.split("/"):
+        return False
+    candidate = (target.vcs_root / rel_path).resolve()
+    artifact = target.artifact_path.resolve()
+    if not target.vcs_scope_is_tree:
+        return candidate == artifact
+    return candidate == artifact or artifact in candidate.parents
 
 
 # ─────────────────────────────────────────────
 # Phase 5: Verify — L1 gate (automated)
 # L2 eval requires Claude orchestration (see run_l2_eval.py)
 # ─────────────────────────────────────────────
-
-def phase_5_l1_gate(skill_path: Path, gt_path: Path | None = None) -> dict:
-    """Run L1 quick gate. Returns {"pass", "checks", "errors"}."""
-    from run_l1_gate import run_l1_gate
-    return run_l1_gate(skill_path, gt_path)
-
 
 # ─────────────────────────────────────────────
 # Holdout helper — soft fetch
@@ -517,46 +617,6 @@ def phase_5_l1_gate(skill_path: Path, gt_path: Path | None = None) -> dict:
 # ─────────────────────────────────────────────
 # Phase 7: Log (fully automated)
 # ─────────────────────────────────────────────
-
-def write_cases_to_dir(cases_dir: Path,
-                       cases: list | None) -> Path | None:
-    """Write per-case structured JSON files to an explicit target directory.
-
-    Low-level primitive. Does not know about workspace/iteration
-    conventions — just takes a target directory and a list of case
-    dicts and writes one ``case_{case_id}.json`` per entry. Creates the
-    directory if it doesn't exist. Returns the directory on success, or
-    None if ``cases`` is empty.
-
-    Each case dict is expected to have at minimum ``case_id``, ``prompt``,
-    ``assertions``, and ``summary`` fields (the shape produced by
-    ``LocalEvaluator.full_eval``). The files are laid out to be
-    grep-friendly so a proposer can ``grep -l '"pass": false'
-    iteration-E*/cases/*.json`` to find failing cases across history,
-    matching the Meta-Harness paper §2 filesystem access pattern
-    (arXiv 2603.28052).
-
-    Case ids are zero-padded to 3 digits in the filename
-    (``case_003.json``) so lexicographic listing also gives numeric
-    order for typical skill GT sizes (< 1000 cases). This eliminates
-    the lex-sort bug family entirely for case file iteration.
-    """
-    if not cases:
-        return None
-    cases_dir = Path(cases_dir)
-    cases_dir.mkdir(parents=True, exist_ok=True)
-    for case in cases:
-        case_id = case.get("case_id", "?")
-        # Zero-pad for lex-sort friendliness (case_003 < case_010)
-        try:
-            file_name = f"case_{int(case_id):03d}.json"
-        except (TypeError, ValueError):
-            file_name = f"case_{case_id}.json"
-        (cases_dir / file_name).write_text(
-            json.dumps(case, indent=2, ensure_ascii=False)
-        )
-    return cases_dir
-
 
 def persist_cases(workspace: Path, iteration: int,
                   cases: list | None) -> Path | None:
@@ -580,6 +640,31 @@ def persist_cases(workspace: Path, iteration: int,
         return None
     return write_cases_to_dir(
         workspace / "evolve" / f"iteration-E{iteration}" / "cases",
+        cases,
+    )
+
+
+def persist_holdout_cases(workspace: Path, iteration: int,
+                          cases: list | None) -> Path | None:
+    """Write per-case structured JSON to ``iteration-E{N}/holdout_cases/``.
+
+    Sibling of :func:`persist_cases` but for the holdout split, in a
+    SEPARATE directory (not ``cases/``). Architecture plan Module A
+    §0.6 traced a real bug: ``orchestrator._eval_holdout_or_none`` only
+    ever read ``result["pass_rate"]`` off the holdout ``full_eval()``
+    result and discarded ``result["cases"]`` — so holdout case content
+    was never written to disk at all. "The proposer can't see holdout"
+    was therefore an accident of that discard, not an enforced
+    guarantee. This function is the fix; ``isolation.build_diagnoser_
+    prompt`` (scripts/isolation.py) is the other half — it only ever
+    references ``cases/``, never ``holdout_cases/``, so the exclusion
+    has an actual directory boundary to point at instead of relying on
+    the accidental-discard behavior this function replaces.
+    """
+    if not cases:
+        return None
+    return write_cases_to_dir(
+        workspace / "evolve" / f"iteration-E{iteration}" / "holdout_cases",
         cases,
     )
 
@@ -744,26 +829,97 @@ def phase_8_loop_control(workspace: Path, max_iterations: int,
 # Git helpers
 # ─────────────────────────────────────────────
 
-def git_revert_last(skill_path: Path) -> dict:
-    """Revert the last commit (for discard/revert actions)."""
+def git_revert_last(skill_path: Path, commit_hash: str | None = None) -> dict:
+    """Undo an experiment commit, touching only the artifact.
+
+    Implemented as restore-then-commit rather than ``git revert``:
+
+        git restore --source=<commit>~1 --staged --worktree -- <pathspec>
+        git commit -m 'Revert "..."' -- <pathspec>
+
+    ``git revert`` was the obvious choice and is the wrong one, for two
+    measured reasons.
+
+    It accepts no pathspec, so its scope is the whole commit. That is
+    safe *only* because :func:`phase_4_commit` puts nothing but the
+    artifact in the commit — the safety comes from what was committed,
+    never from how it is undone. Stating it the other way round is what
+    produced the original bug: an unscoped ``git add -u`` swept a user's
+    unrelated edit into the commit, and this function then dutifully
+    deleted it, leaving no copy in the working tree or the index.
+
+    It also refuses to run at all when the user has *staged* unrelated
+    changes: ``error: your local changes would be overwritten by revert``,
+    exit 128, nothing reverted. Since the orchestrator treats a failed
+    revert as grounds for aborting the whole run, a user who happened to
+    have something in their index would find the loop dying at its first
+    discarded iteration. The restore/commit pair has no such
+    precondition — verified with unrelated staged, unstaged and untracked
+    changes present simultaneously, all three preserved.
+
+    The result is equivalent in what matters: the artifact returns to its
+    pre-experiment state, files the experiment added are deleted, and a
+    real inverse commit records that it happened.
+
+    Args:
+        skill_path: the artifact, or the skill directory holding it.
+        commit_hash: which commit to undo. Naming it is strongly preferred
+            over the ``HEAD`` default, because ``HEAD~1`` only means "before
+            the experiment" while the experiment is still the newest commit.
+            Anything that lands a commit in between — a future phase, a
+            concurrent process, a user committing mid-run — silently shifts
+            what ``HEAD~1`` points at, and the artifact would be restored to
+            some other revision with no error raised. Today's call sites do
+            nothing of the sort (verified: no commit is created between
+            ``phase_4_commit`` and either revert), so the default is correct
+            *now*; passing the hash is what keeps it correct later.
+    """
+    from target import resolve_target  # noqa: sibling import
+
     try:
-        result = subprocess.run(
-            ["git", "revert", "HEAD", "--no-edit"],
-            cwd=str(skill_path), capture_output=True, text=True, timeout=10,
+        target = resolve_target(skill_path)
+        pathspec = target.vcs_pathspec
+        base = f"{commit_hash}~1" if commit_hash else "HEAD~1"
+
+        restore = _git(
+            ["restore", f"--source={base}", "--staged", "--worktree",
+             "--", pathspec],
+            target,
         )
-        return {"success": result.returncode == 0, "output": result.stdout + result.stderr}
-    except (subprocess.TimeoutExpired, OSError) as e:
+        if restore.returncode != 0:
+            return {"success": False,
+                    "output": (restore.stderr.strip() or restore.stdout.strip())}
+
+        subject = _git(
+            ["log", "-1", "--pretty=%s",
+             *( [commit_hash] if commit_hash else [] )], target, timeout=5
+        ).stdout.strip()
+        commit = _git(
+            ["commit", "-m", f'Revert "{subject}"', "--", pathspec], target
+        )
+        if commit.returncode != 0:
+            return {"success": False,
+                    "output": (commit.stderr.strip() or commit.stdout.strip())}
+        return {"success": True, "output": commit.stdout + commit.stderr}
+    except (subprocess.TimeoutExpired, OSError, RuntimeError, ValueError) as e:
         return {"success": False, "output": str(e)}
 
 
+
 def save_best_version(skill_path: Path, workspace: Path, iteration: int) -> str:
-    """Copy current skill to best_versions/."""
-    import shutil
+    """Archive the current artifact under ``best_versions/``.
+
+    Delegates the copy to the target because the two shapes need
+    different operations: this used to call ``shutil.copytree``
+    unconditionally, which raises ``NotADirectoryError`` for a prompt
+    file — so for a file target the archive of best-scoring versions,
+    the only record of what actually worked, could never be written.
+    """
+    from target import resolve_target  # noqa: sibling import
+
+    target = resolve_target(skill_path)
     dest = workspace / "evolve" / "best_versions" / f"iteration-{iteration}"
-    if dest.exists():
-        shutil.rmtree(dest)
-    shutil.copytree(skill_path, dest, ignore=shutil.ignore_patterns('.git'))
-    return str(dest)
+    return str(target.copy_artifact_to(dest))
 
 
 # ─────────────────────────────────────────────

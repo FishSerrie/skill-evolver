@@ -94,7 +94,21 @@ grader_content = get_creator_agent_path("grader.md").read_text()
 comparator_content = get_creator_agent_path("comparator.md").read_text()
 ```
 
-There is no fallback path. Creator is a hard dependency.
+Creator is an **optional enhancement**, not a hard dependency. The
+evolve loop's evaluation, gating, and memory are Evolver's own and run
+standalone. What Creator adds — a redundant L1 frontmatter cross-check,
+opt-in trigger-F1, the post-run HTML review, and the full grader /
+comparator / analyzer protocols — each degrades independently when
+Creator is absent. See SKILL.md § "Optional enhancements" for the
+per-feature fallback behaviour.
+
+`get_creator_agent_path()` (and `require_creator()` underneath it) still
+raise `CreatorNotFoundError`, because reading a protocol file that does
+not exist has no sensible fallback. Guard those calls when you add new
+callers: catch `CreatorNotFoundError` and skip the Creator-specific
+branch rather than letting it abort a loop. Use `find_creator_path()`,
+which returns `None`, when you only need to know whether Creator is
+available.
 
 ---
 

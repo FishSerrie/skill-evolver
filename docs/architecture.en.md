@@ -162,7 +162,6 @@ By splitting assertions this way, the system minimizes scoring noise (no open-en
 **Interface**:
 
 - `judge(question: str, context: str) -> bool` -- Sends a YES/NO prompt to the model; parses and returns the boolean result.
-- `judge_batch(questions: list[tuple[str, str]]) -> list[bool]` -- Sequential convenience wrapper for multiple questions.
 - `reset_stats()` -- Resets cumulative token-usage and wall-clock counters (used for cost attribution).
 
 Constraining every semantic check to **binary classification** sidesteps the well-documented reliability problems of numeric LLM scoring: scale drift, anchoring effects, and length bias.

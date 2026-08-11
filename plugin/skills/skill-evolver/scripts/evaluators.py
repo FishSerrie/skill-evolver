@@ -66,12 +66,13 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent))
-from common import require_creator, find_creator_path, validate_frontmatter
+from common import build_skill_corpus, validate_frontmatter
 
 # Re-exported for back-compat so ``from evaluators import BinaryLLMJudge``
 # and ``from evaluators import basic_schema_check`` keep working after
 # the 2026-04-09 slim split. External callers don't need to know where
 # these symbols physically live.
+from case_store import write_cases_to_dir
 from binary_judge import BinaryLLMJudge
 from trace_enrichment import (
     build_skill_snapshot,
@@ -114,15 +115,78 @@ class Evaluator(ABC):
         """Fast validation (seconds). Returns {"pass": bool, "checks": [...], "errors": [...]}."""
         ...
 
-    @abstractmethod
     def full_eval(self, skill_path: Path, gt_path: Path,
-                  split: str = "dev") -> dict:
-        """Full evaluation against GT. Returns the standard result dict."""
+                  split: str = "dev", **kwargs) -> dict:
+        """Evaluate, then attach the figures the gate needs.
+
+        A template method, and deliberately not left to each backend. The
+        gate enforces a plan's size thresholds by reading ``snapshot`` from
+        this dict, and treats its absence as "no structural signal exists",
+        which passes. So a backend that forgot the key did not fail
+        loudly — it silently switched off `max_structure` and
+        `max_structure_growth` for everyone using it. Five of six backends
+        had forgotten it, including the default one, so a plan capping the
+        artifact's size was accepted, checked nothing, and reported `keep`.
+
+        Adding it here rather than in each implementation makes that
+        omission impossible rather than merely discouraged: there is one
+        place left where it could go missing, instead of one per backend
+        and one per early-return inside each.
+        """
+        result = self._run_full_eval(skill_path, gt_path, split, **kwargs)
+        # setdefault, not assignment: a backend that measured the artifact
+        # itself — the grader-based one takes its snapshot from the same
+        # target it just ran — knows more precisely what was evaluated than
+        # a re-read from disk afterwards would.
+        result.setdefault("snapshot", self.structural_snapshot(skill_path))
+        return result
+
+    @abstractmethod
+    def _run_full_eval(self, skill_path: Path, gt_path: Path,
+                       split: str = "dev", **kwargs) -> dict:
+        """Full evaluation against GT. Returns the standard result dict.
+
+        Implemented by each backend; called by :meth:`full_eval`, which is
+        what callers use.
+        """
         ...
+
+    def structural_snapshot(self, skill_path: Path) -> dict:
+        """The size figures the gate compares against its thresholds.
+
+        Defined here, once, so that every backend reports the same thing.
+        Each one used to be free not to, and all but one took that option:
+        a plan setting `max_structure` was accepted, the gate received
+        nothing, and the run reported `keep` having checked no size at all.
+        The user saw a threshold in their plan and a pass in their log, and
+        the two were unrelated.
+
+        Delegated to the target so that every artifact shape reports the
+        same keys, which is what lets `check_structure` avoid asking what
+        kind of artifact it is looking at.
+
+        Do not confuse this with ``trace_enrichment.build_skill_snapshot``.
+        That one records ``size_bytes`` / ``references_loaded`` for
+        diagnosis and shares none of the gate's keys; substituting it would
+        satisfy the key's presence while leaving every threshold
+        unevaluated.
+
+        Returns ``{}`` rather than raising when the artifact cannot be
+        resolved: this is a measurement taken alongside the real work, and
+        losing a whole evaluation because a size could not be counted
+        trades a complete result for none.
+        """
+        try:
+            from target import resolve_target
+
+            return resolve_target(skill_path).snapshot()
+        except (FileNotFoundError, ValueError, OSError):
+            return {}
 
     def info(self) -> dict:
         """Return evaluator metadata."""
         return {"name": self.name, "type": self.__class__.__name__}
+
 
 
 # ─────────────────────────────────────────────
@@ -155,32 +219,17 @@ class LocalEvaluator(Evaluator):
         return run_l1_gate(skill_path, gt_path)
 
     def _load_skill_corpus(self, skill_path: Path) -> str:
-        """Load the full skill corpus: SKILL.md + references/*.md + agents/*.md.
+        """Load the full skill corpus: SKILL.md + prose subdirectories.
 
-        Claude reads all of a skill's files when running it; an evaluator
-        that scores only SKILL.md misses content that legitimately lives
-        in references/ and agents/. This mirrors dev/run_loop.py's
-        build_corpus() so local eval reflects real Claude behavior.
-
-        Note: the ``### <rel-path> ###`` header format matters — it's
-        what :func:`trace_enrichment.locate_in_corpus` uses to map
-        char offsets back to ``{file, line}`` pointers for the trace
-        enrichment.
+        Thin wrapper over :func:`common.build_skill_corpus`, which owns
+        the concatenation and the list of directories a skill is made of.
+        Kept as a method because subclasses and tests patch it to
+        substitute a different corpus (see ``BehavioralEvaluator``), and
+        that seam is worth preserving even though the logic moved.
         """
-        parts = []
-        skill_md = skill_path / "SKILL.md"
-        if skill_md.exists():
-            parts.append(f"### SKILL.md ###\n{skill_md.read_text()}")
-        for subdir in ("references", "agents"):
-            dir_path = skill_path / subdir
-            if not dir_path.is_dir():
-                continue
-            for md in sorted(dir_path.rglob("*.md")):
-                rel = md.relative_to(skill_path)
-                parts.append(f"### {rel} ###\n{md.read_text()}")
-        return "\n\n".join(parts)
+        return build_skill_corpus(skill_path)
 
-    def full_eval(self, skill_path: Path, gt_path: Path,
+    def _run_full_eval(self, skill_path: Path, gt_path: Path,
                   split: str = "dev",
                   cases_dir: Path | None = None) -> dict:
         """Run full eval against GT assertions.
@@ -284,7 +333,6 @@ class LocalEvaluator(Evaluator):
         # Lazy-import to avoid a top-level cycle with evolve_loop (which
         # already imports from this module).
         if cases_dir is not None and cases:
-            from evolve_loop import write_cases_to_dir
             write_cases_to_dir(Path(cases_dir), cases)
 
         duration = time.time() - t0
@@ -299,7 +347,19 @@ class LocalEvaluator(Evaluator):
             "tokens": tokens,
             "duration": round(duration, 2),
             "cases": cases,
+            # Reported at the top level because that is where the gate
+            # reads it. Note this is NOT `skill_snapshot` above: that one
+            # is a trace record for diagnosis (`size_bytes`,
+            # `references_loaded`, ...) and carries none of the keys the
+            # gate looks for. The two are easy to confuse — they are both
+            # called a snapshot — and confusing them is what made the
+            # structural thresholds silently do nothing: every backend
+            # except one omitted this key, so `check_structure` received
+            # None and returned "pass" for lack of data. A user who set
+            # `max_structure` saw `keep` and had no protection at all.
+            "snapshot": self.structural_snapshot(skill_path),
         }
+
 
     # ─────────────────────────────────────────
     # Trace-enrichment helpers live in ``trace_enrichment.py``
@@ -435,7 +495,9 @@ class LocalEvaluator(Evaluator):
 # Evaluator registry — lazy strings resolved inside get_evaluator() so
 # importing evaluators.py doesn't pull in evaluator_backends.py unless
 # one of the non-default backends is actually requested.
-EVALUATOR_NAMES: tuple[str, ...] = ("local", "creator", "script", "pytest")
+EVALUATOR_NAMES: tuple[str, ...] = (
+    "local", "creator", "script", "pytest", "behavioral", "grader",
+)
 
 
 def get_evaluator(config: dict[str, Any] | None = None) -> Evaluator:
@@ -443,14 +505,15 @@ def get_evaluator(config: dict[str, Any] | None = None) -> Evaluator:
 
     Config keys:
         evaluator: str          — "local" | "creator" | "script" | "pytest"
+                                  | "behavioral" | "grader"
         evaluator_script: str   — path to script (for ScriptEvaluator)
         evaluator_test_cmd: str — test command (for PytestEvaluator)
         model: str              — LLM model (for binary judge)
         evaluator_timeout: int  — timeout in seconds
 
-    The three non-default backends live in ``scripts/evaluator_backends.py``
-    and are lazy-imported here so evaluators.py has no load-time dependency
-    on them.
+    The non-default backends live in ``scripts/evaluator_backends.py`` and
+    ``scripts/grader_evaluator.py``, lazy-imported here so evaluators.py has
+    no load-time dependency on them.
     """
     config = config or {}
     name = config.get("evaluator", "creator")
@@ -481,6 +544,40 @@ def get_evaluator(config: dict[str, Any] | None = None) -> Evaluator:
                                 "pytest tests/ -v --tb=short"),
             timeout=config.get("evaluator_timeout", 300),
         )
+    elif name == "behavioral":
+        from evaluator_backends import BehavioralEvaluator
+        return BehavioralEvaluator(
+            model=config.get("model"),
+            backend=config.get("behavioral_backend"),
+            sample_size=config.get("behavioral_sample_size", 8),
+            fidelity=config.get("behavioral_fidelity", "assume_loaded"),
+            timeout=config.get("evaluator_timeout", 120),
+            workspace=config.get("workspace"),
+        )
+    elif name == "grader":
+        # Runs the artifact and grades its output, rather than matching
+        # assertions against the artifact's text. Lazy-imported for the
+        # same reason as the others: nothing should pay for it unless it
+        # is asked for.
+        from grader_evaluator import GraderEvaluator, PromptRunner, build_grader
+        from datasets import ColumnMap
+
+        columns = config.get("columns")
+        if isinstance(columns, dict):
+            columns = ColumnMap(**columns)
+        return GraderEvaluator(
+            grader=build_grader(config),
+            runner=config.get("runner") or PromptRunner(
+                model=config.get("model"),
+                backend=config.get("runner_backend"),
+                timeout=config.get("evaluator_timeout", 120),
+                input_key=config.get("input_key", "input"),
+            ),
+            columns=columns,
+            splits=config.get("splits"),
+            stratify=config.get("stratify", True),
+            section=config.get("section"),
+        )
     else:
         raise ValueError(
             f"Unknown evaluator '{name}'. "
@@ -488,19 +585,145 @@ def get_evaluator(config: dict[str, Any] | None = None) -> Evaluator:
         )
 
 
-def parse_evaluator_from_plan(plan_path: Path) -> dict[str, Any]:
-    """Extract evaluator config from evolve_plan.md.
+# Configuration a plan file may set, and the type each value parses as.
+# One table rather than a branch per key: adding a setting should not mean
+# adding a parsing rule, and a key listed here is guaranteed to reach
+# whoever reads the config — the failure this replaces was a plan setting a
+# size cap that nothing ever read.
+PLAN_KEYS: dict[str, type] = {
+    # Evaluator selection and transport
+    "evaluator": str,
+    "evaluator_script": str,
+    "evaluator_test_cmd": str,
+    "evaluator_timeout": int,
+    "model": str,
+    "judge_model": str,
+    "behavioral_sample_size": int,
+    "behavioral_backend": str,
+    "behavioral_fidelity": str,
+    # Grader selection and the case fields it reads
+    "grader": str,
+    "grader_timeout": int,
+    "points_key": str,
+    "expectations_key": str,
+    "rubric_key": str,
+    "input_key": str,
+    "commit_first": bool,
+    "rubric_instruction": str,
+    "partial_weight": float,
+    "pass_threshold": float,
+    "runner_backend": str,
+    "judge_backend": str,
+    "section": str,
+    # Dataset shaping — JSON values, since they are structured
+    "columns": dict,
+    "splits": dict,
+    "stratify": bool,
+    # Gate thresholds
+    "min_delta": float,
+    "noise_threshold": float,
+    "trigger_tolerance": float,
+    "max_token_increase": float,
+    "max_latency_increase": float,
+    "regression_tolerance": float,
+    "max_structure_growth": float,
+    "max_structure": dict,
+    "min_metrics": dict,
+    "max_metric_regression": dict,
+}
 
-    Looks for lines like:
-        evaluator: script
-        evaluator_script: ./my_eval.py
-        evaluator_timeout: 300
-        model: claude-sonnet-4-6
+# A key must look like this to be considered configuration at all. Prose in
+# a plan is written as "Notes:", "URL:", "Step 1:" — capitalised, spaced, or
+# punctuated — so requiring lower-case snake_case separates a misspelled
+# setting from a sentence without needing a list of either.
+#
+# An earlier version enumerated look-alike names by hand. That failed on the
+# misspellings people actually make: of fourteen realistic typos
+# (`mn_metrics`, `min_metrcis`, `commit_frist`, `points_ky`, `colums` …) only
+# one happened to be on the list, so thirteen stayed silent — in a mechanism
+# whose entire purpose is to catch "I set a threshold and it did nothing".
+# Naming every possible mistake in advance is not something one can do;
+# recognising the shape is.
+_PLAN_KEY_SHAPE = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
+
+
+def parse_evaluator_from_plan(plan_path: Path) -> dict[str, Any]:
+    """Extract evaluator and gate configuration from evolve_plan.md.
+
+    Recognised keys are declared in :data:`PLAN_KEYS` with the type each
+    parses as, so adding one is a table entry rather than another branch.
+    A line may be written with or without a leading ``- ``.
+
+    Anything that fails to become configuration is reported under
+    ``_unknown`` — both an unrecognised key and a recognised key whose value
+    could not be parsed. Those two mistakes have the same symptom, "I set a
+    threshold and it did nothing", so they get the same treatment. Parsing
+    never fails, because a plan is mostly prose and a stray colon must not
+    stop a run; the caller decides how loudly to complain.
     """
     config: dict[str, Any] = {}
-
     if not plan_path.exists():
         return config
+
+    unknown: list[str] = []
+    for raw in plan_path.read_text().split("\n"):
+        line = raw.strip()
+        if line.startswith("- "):
+            line = line[2:].strip()
+        if ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        key, value = key.strip(), value.strip()
+        if not _PLAN_KEY_SHAPE.match(key):
+            # Prose, not configuration.
+            continue
+        if key not in PLAN_KEYS:
+            unknown.append(key)
+            continue
+        parsed = _parse_plan_value(value, PLAN_KEYS[key])
+        if parsed is None:
+            # A known key whose value is unusable. Reported rather than
+            # quietly left at its default: the author wrote it down because
+            # they wanted it to take effect.
+            unknown.append(f"{key} (value {value!r} is not a valid "
+                           f"{PLAN_KEYS[key].__name__})")
+            continue
+        config[key] = parsed
+
+    if unknown:
+        config["_unknown"] = unknown
+    return config
+
+
+def _parse_plan_value(value: str, kind: type) -> Any:
+    """Parse one plan value, or return ``None`` when it is unusable.
+
+    ``None`` means "leave the key unset" rather than "the value is None", so
+    a blank or malformed entry falls back to the default instead of
+    overriding it with something nonsensical.
+    """
+    if not value:
+        return None
+    if kind is str:
+        return value
+    if kind is bool:
+        lowered = value.lower()
+        if lowered in ("true", "yes", "on", "1"):
+            return True
+        if lowered in ("false", "no", "off", "0"):
+            return False
+        return None
+    try:
+        if kind is int:
+            return int(value)
+        if kind is float:
+            return float(value)
+        if kind in (dict, list):
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, kind) else None
+    except (ValueError, json.JSONDecodeError):
+        return None
+    return None
 
     content = plan_path.read_text()
     for line in content.split("\n"):
@@ -523,6 +746,23 @@ def parse_evaluator_from_plan(plan_path: Path) -> dict[str, Any]:
                 config["evaluator_timeout"] = int(val)
             except ValueError:
                 pass
+        elif line.startswith("- behavioral_sample_size:") or \
+                line.startswith("behavioral_sample_size:"):
+            val = line.split(":", 1)[1].strip()
+            try:
+                config["behavioral_sample_size"] = int(val)
+            except ValueError:
+                pass
+        elif line.startswith("- behavioral_backend:") or \
+                line.startswith("behavioral_backend:"):
+            val = line.split(":", 1)[1].strip()
+            if val:
+                config["behavioral_backend"] = val
+        elif line.startswith("- behavioral_fidelity:") or \
+                line.startswith("behavioral_fidelity:"):
+            val = line.split(":", 1)[1].strip()
+            if val:
+                config["behavioral_fidelity"] = val
         elif line.startswith("- model:") or line.startswith("model:"):
             val = line.split(":", 1)[1].strip()
             if val:

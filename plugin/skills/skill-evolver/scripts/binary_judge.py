@@ -47,9 +47,25 @@ class BinaryLLMJudge:
     available backend, or respects LLM_BACKEND env var.
     """
 
-    def __init__(self, model: str | None = None, timeout: int = 60):
+    def __init__(self, model: str | None = None, timeout: int = 60,
+                 backend: str | None = None):
+        """
+        Args:
+            model: model identifier passed to the backend.
+            timeout: per-call limit in seconds.
+            backend: which backend to reach the model through. Left as
+                ``None`` the backend is auto-detected, which is the right
+                default but was previously the *only* option — so a judge
+                could not be pointed at a working CLI when the first one
+                detected happened to be unusable (an unauthenticated
+                `claude`, say). Every case then failed with the same
+                transport error, correctly reported as errored rather than
+                as a bad candidate, but with no way to proceed short of
+                fixing the environment.
+        """
         self.model = model
         self.timeout = timeout
+        self.backend = backend
         self.total_tokens = 0
         self.total_duration = 0.0
         self._call_llm = None  # lazy import to avoid circular dependency
@@ -129,6 +145,40 @@ class BinaryLLMJudge:
         verdict, _ = self.judge_with_reasoning(question, context)
         return verdict
 
+    def complete(self, prompt: str) -> str:
+        """Send ``prompt`` and return the reply verbatim.
+
+        Distinct from :meth:`judge_with_reasoning`, which is for binary
+        questions and therefore **consumes the last line as the verdict** —
+        it splits that line off and returns only what preceded it. Anything
+        needing the model's full answer must come through here instead.
+
+        This is not a second transport: it reuses the same backend layer, so
+        a new backend still works everywhere at once. What it adds is an
+        honest channel for the case where the answer *is* the output —
+        asking a binary-question method for raw text silently loses the last
+        line, which is exactly where a well-behaved model puts its
+        structured answer.
+
+        Errors are reported as text rather than raised, matching this
+        class's existing convention: a caller upstream turns a bad reply
+        into an errored judgment, and a raise here would abort the run.
+        """
+        call_llm = self._get_llm_caller()
+        t0 = time.time()
+        try:
+            output = call_llm(prompt, model=self.model, timeout=self.timeout,
+                              backend=self.backend)
+            self.total_duration += time.time() - t0
+            self.total_tokens += max(len(prompt) // 4, 1)
+            return (output or "").strip()
+        except Exception as e:
+            self.total_duration += time.time() - t0
+            err = f"{type(e).__name__}: {e}"
+            print(f"[warn] BinaryLLMJudge.complete failed: {err}",
+                  file=sys.stderr)
+            return ""
+
     def judge_with_reasoning(self, question: str,
                              context: str) -> tuple[bool, str]:
         """Ask the LLM a binary question and capture both verdict + reasoning.
@@ -160,7 +210,8 @@ class BinaryLLMJudge:
         call_llm = self._get_llm_caller()
         t0 = time.time()
         try:
-            output = call_llm(prompt, model=self.model, timeout=self.timeout)
+            output = call_llm(prompt, model=self.model, timeout=self.timeout,
+                              backend=self.backend)
             duration = time.time() - t0
             self.total_duration += duration
             self.total_tokens += max(len(prompt) // 4, 1)
@@ -197,17 +248,6 @@ class BinaryLLMJudge:
             print(f"[warn] BinaryLLMJudge.judge failed: {err}",
                   file=sys.stderr)
             return False, f"[llm_error] {err}"
-
-    def judge_batch(self, questions: list[tuple[str, str]]) -> list[bool]:
-        """Judge multiple questions sequentially.
-
-        Args:
-            questions: List of (question, context) tuples.
-
-        Returns:
-            List of boolean results.
-        """
-        return [self.judge(q, c) for q, c in questions]
 
     def reset_stats(self):
         """Reset accumulated token and duration counters."""

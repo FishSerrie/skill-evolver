@@ -35,11 +35,13 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from common import require_creator, CreatorNotFoundError, find_workspace
+from common import find_creator_path, find_workspace
 from aggregate_results import parse_results_tsv, calculate_summary
-from evaluators import get_evaluator, parse_evaluator_from_plan, Evaluator
+from evaluators import (
+    EVALUATOR_NAMES, get_evaluator, parse_evaluator_from_plan, Evaluator,
+)
 from gate import phase_6_gate_decision
-from llm import phase_2_3_ideate_and_modify, auto_construct_gt
+from llm import phase_2_diagnose, phase_3_modify, phase_6_5_review, auto_construct_gt
 from cleanup import (
     cleanup_best_versions, cleanup_eval_outputs, _try_launch_eval_viewer,
     _prepare_viewer_data,
@@ -48,16 +50,46 @@ from evolve_loop import (  # phase definitions live in evolve_loop.py
     phase_0_setup, phase_1_review, phase_4_commit,
     phase_7_log, phase_8_loop_control,
     git_revert_last, save_best_version, _list_untracked,
+    persist_holdout_cases,
 )
 
 
-def _eval_holdout_or_none(evaluator, skill_path: Path,
-                          gt_path: Path) -> float | None:
+def _measured(result: dict, *keys: str) -> dict:
+    """The named keys that ``result`` actually carries, omitting the rest.
+
+    Exists so a metric nobody measured stays absent instead of arriving as
+    a plausible constant. Both `trigger_f1` and `regression_pass` were
+    previously passed to the gate as a literal ``1.0`` regardless of
+    whether anything had computed them — a perfect score, permanently, for
+    a check that never ran. That made `trigger_tolerance` and
+    `regression_tolerance` dead settings, and it also defeated the gate's
+    own safeguard: `check_trigger` looks for the key's presence to decide
+    whether to report itself inactive, so a constant made it announce a
+    passing check forever.
+
+    An absent key lets the gate say "not measured", which is the truth and
+    is actionable. A defaulted key says "measured, and fine", which is
+    neither.
+    """
+    return {key: result[key] for key in keys if key in result}
+
+
+def _eval_holdout_or_none(evaluator, skill_path: Path, gt_path: Path,
+                          workspace: Path | None = None,
+                          iteration: int | None = None) -> float | None:
     """Run the evaluator on the holdout split and return the pass rate.
 
     Returns None when the GT has no holdout cases (so the evaluator either
     raises or reports zero assertions). The gate then degrades to dev-only
     quality logic.
+
+    ``workspace``/``iteration``, when both given, persist the holdout
+    ``cases`` to ``iteration-E{N}/holdout_cases/`` via
+    :func:`persist_holdout_cases` — fixing the bug traced in the
+    architecture plan §0.6, where this function used to read
+    ``result.get("pass_rate")`` and silently drop ``result["cases"]``.
+    Both are optional (default None) so any existing caller that only
+    wants the pass rate keeps working unchanged.
     """
     try:
         result = evaluator.full_eval(skill_path, gt_path, split="holdout")
@@ -65,7 +97,40 @@ def _eval_holdout_or_none(evaluator, skill_path: Path,
         return None
     if not result or result.get("total_assertions", 0) == 0:
         return None
+    if workspace is not None and iteration is not None:
+        persist_holdout_cases(workspace, iteration, result.get("cases"))
     return result.get("pass_rate")
+
+
+def _git_diff_for_commit(skill_path: Path, commit_hash: str) -> str:
+    """Return the diff a single commit introduced, for Phase 6.5's
+    verifier panel — the panel reviews what a candidate actually
+    changed, not a description of what it claims to have changed.
+
+    Scoped to the artifact's pathspec. Unlike the staging path this is
+    read-only, so an unscoped diff destroys nothing; what it does is feed
+    the review panel changes the candidate did not make, and the panel is
+    asked to judge whether the change is overfitting or gaming its
+    metric. A verifier reasoning about someone else's edits is being
+    asked the wrong question.
+
+    Returns an empty string (not an exception) if the diff can't be
+    produced (e.g. the commit is the repo's first commit and has no
+    parent) — Phase 6.5 still runs with an empty diff rather than
+    aborting the whole iteration over a diff-formatting failure.
+    """
+    from target import resolve_target
+
+    try:
+        target = resolve_target(skill_path)
+    except (FileNotFoundError, ValueError):
+        return ""
+    result = subprocess.run(
+        ["git", "diff", f"{commit_hash}~1", commit_hash,
+         "--", target.vcs_pathspec],
+        cwd=str(target.vcs_root), capture_output=True, text=True, timeout=10,
+    )
+    return result.stdout if result.returncode == 0 else ""
 
 
 # ─────────────────────────────────────────────
@@ -94,12 +159,27 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
                  been changed before allowing a real run.
     """
     # Initialize evaluator
+    plan_path = workspace / "evolve" / "evolve_plan.md"
+    plan_config = parse_evaluator_from_plan(plan_path)
     if evaluator is None:
-        plan_path = workspace / "evolve" / "evolve_plan.md"
-        eval_config = parse_evaluator_from_plan(plan_path)
+        eval_config = {k: v for k, v in plan_config.items() if k != "_unknown"}
         if model:
             eval_config["model"] = model
         evaluator = get_evaluator(eval_config)
+
+    # Gate thresholds the plan may set. Read here so the keys documented in
+    # SKILL.md and gate_rules.md reach the gate that implements them —
+    # otherwise a plan capping the artifact's size would have no effect and
+    # nothing would say so, which is worse than having no cap at all.
+    gate_thresholds = {
+        key: plan_config[key]
+        for key in ("max_structure_growth", "max_structure",
+                    "min_metrics", "max_metric_regression",
+                    "min_delta", "noise_threshold", "trigger_tolerance",
+                    "max_token_increase", "max_latency_increase",
+                    "regression_tolerance")
+        if key in plan_config
+    }
 
     def log(msg):
         if verbose:
@@ -112,12 +192,28 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
     log(f"GT: {gt_path}")
     log(f"Max iterations: {max_iterations}")
     log(f"Evaluator: {evaluator.info()}")
+    if gate_thresholds:
+        log(f"Gate thresholds from plan: {gate_thresholds}")
+    for key in plan_config.get("_unknown", []):
+        # Reported rather than ignored: a misspelled threshold used to be
+        # dropped in silence, so a plan that looked like it capped the
+        # artifact's size had no effect and nothing said so.
+        log(f"WARNING: unrecognised plan setting {key!r} — it has no effect")
     log("=" * 60)
 
-    # Creator dependency check (fail fast)
-    log("Checking skill-creator dependency...")
-    creator_path = require_creator()
-    log(f"Creator found: {creator_path}")
+    # skill-creator is an optional enhancement, not a prerequisite. The
+    # evolve loop's evaluation, gating, and memory are all Evolver's own
+    # (LocalEvaluator is stdlib-only). Creator adds redundant frontmatter
+    # validation, opt-in trigger-F1, and the post-run HTML review — each
+    # degrades independently where it is used. Report which mode we are in
+    # so the log makes the difference auditable, then continue either way.
+    creator_path = find_creator_path()
+    if creator_path:
+        log(f"skill-creator found (optional enhancements enabled): {creator_path}")
+    else:
+        log("skill-creator not installed — running standalone. "
+            "Frontmatter validation uses the built-in stdlib checker; "
+            "trigger-F1 and the HTML review are unavailable.")
 
     # Phase 0: Setup
     log("Phase 0: Setup")
@@ -151,7 +247,8 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
         )
         log(f"ABORT: {msg}")
         return {"success": False, "error": msg}
-    baseline_holdout = _eval_holdout_or_none(evaluator, skill_path, gt_path)
+    baseline_holdout = _eval_holdout_or_none(
+        evaluator, skill_path, gt_path, workspace=workspace, iteration=0)
     log(f"Baseline: {baseline['total_passed']}/{baseline['total_assertions']} = {baseline_rate:.0%}"
         + (f" | holdout {baseline_holdout:.0%}" if baseline_holdout is not None else " | holdout n/a"))
 
@@ -161,6 +258,21 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
 
     best_rate = baseline_rate
     best_holdout = baseline_holdout
+    # Real bug found via adversarial review: cost/latency baseline used
+    # to stay frozen at whatever Phase 0 measured, forever, even as
+    # best_rate/best_holdout tracked the current best version on every
+    # keep. gate_rules.md's own contract says "baseline: evaluation
+    # results for the CURRENT BEST version" — that was only true for 2
+    # of 5 gate dimensions. Track these the same way quality is tracked.
+    best_tokens = baseline.get("tokens", 0)
+    best_duration = baseline.get("duration", 0.0)
+    # Structural size and per-metric scores of the current best, tracked the
+    # same way for the same reason: a gate handed a stale baseline compares
+    # the candidate against something that is no longer the incumbent.
+    # Absent when the evaluator does not report them, in which case the
+    # corresponding gate stays inactive rather than guessing.
+    best_snapshot = baseline.get("snapshot")
+    best_metrics = baseline.get("metrics", {})
     current_layer = "body"
 
     for iteration in range(1, max_iterations + 1):
@@ -183,10 +295,22 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
         # staged, any user-dropped debris is ignored.
         untracked_before = _list_untracked(skill_path)
 
-        # Phase 2+3: Ideate and Modify (via claude -p)
-        log("Phase 2+3: Ideate and Modify (calling claude -p)")
-        result_23 = phase_2_3_ideate_and_modify(
-            skill_path, workspace, review, gt_path, current_layer, model)
+        # Phase 2: Diagnose, Phase 3: Modify (via claude -p) — two
+        # separate _call_claude subprocess invocations, no shared
+        # context (Module B isolation; phase_2_3_ideate_and_modify is
+        # the deprecated single-call predecessor, kept only for
+        # external callers that haven't migrated)
+        log("Phase 2: Diagnose (calling claude -p)")
+        diagnosis = phase_2_diagnose(
+            skill_path, workspace, review, gt_path, current_layer, model=model)
+        log("Phase 3: Modify (calling claude -p)")
+        mutation = phase_3_modify(skill_path, diagnosis, current_layer, model=model)
+        result_23 = {
+            "changed": mutation["changed"],
+            "description": mutation["description"],
+            "mutation_type": "unknown",
+            "diagnosis": diagnosis.get("recommended_focus", ""),
+        }
         log(f"  Result: changed={result_23['changed']}, {result_23['description']}")
 
         if not result_23["changed"]:
@@ -209,15 +333,26 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
         # caller can inspect it.
         if dry_run:
             log("DRY-RUN: phase_2_3 proposed a mutation — reverting working tree and exiting")
+            # Scoped to the artifact. `git checkout -- .` was already
+            # safe by accident — `.` is a pathspec relative to cwd, so it
+            # only reached the subtree — but it depended on cwd being a
+            # directory, which is false for a file target. Naming the
+            # pathspec makes the scope explicit and works for both shapes.
+            from target import resolve_target
+
+            target = resolve_target(skill_path)
             subprocess.run(
-                ["git", "checkout", "--", "."], cwd=str(skill_path),
+                ["git", "checkout", "--", target.vcs_pathspec],
+                cwd=str(target.vcs_root),
                 capture_output=True, text=True, timeout=10,
             )
             # Also remove the mutation-added untracked files so the
-            # tree matches the pre-iteration state exactly.
+            # tree matches the pre-iteration state exactly. Paths are
+            # repository-relative (that is what _list_untracked returns),
+            # so they resolve against the repository root.
             for nf in new_files:
                 try:
-                    (skill_path / nf).unlink(missing_ok=True)
+                    (target.vcs_root / nf).unlink(missing_ok=True)
                 except OSError:
                     pass
             return {
@@ -251,7 +386,7 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
             # HEAD, hook veto, etc.) and we keep iterating, the broken
             # mutation contaminates the next iteration's baseline and
             # the entire run becomes unreliable. Abort instead.
-            revert = git_revert_last(skill_path)
+            revert = git_revert_last(skill_path, commit["commit_hash"])
             if not revert.get("success"):
                 msg = (
                     f"L1 fail at iter {iteration}; git revert ALSO failed "
@@ -273,35 +408,99 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
         log("  L2 eval...")
         new_eval = evaluator.full_eval(skill_path, gt_path)
         new_rate = new_eval["pass_rate"]
-        new_holdout = _eval_holdout_or_none(evaluator, skill_path, gt_path)
+        new_holdout = _eval_holdout_or_none(
+            evaluator, skill_path, gt_path, workspace=workspace, iteration=iteration)
         delta = new_rate - best_rate
         ho_msg = (f" | holdout {new_holdout:.0%}" if new_holdout is not None else "")
         log(f"  L2: {new_eval.get('total_passed', '?')}/{new_eval.get('total_assertions', '?')} = {new_rate:.0%} (delta: {delta:+.0%}){ho_msg}")
 
         # Phase 6: Gate (with real metrics from evaluator, incl. holdout)
         log("Phase 6: Gate")
+        # Structural and per-metric figures are forwarded when the evaluator
+        # supplies them. Omitting them left the structure and metric gates
+        # permanently inactive — they pass when handed nothing — so a
+        # candidate a hundred times more verbose was kept while the plan
+        # appeared to cap its size. Thresholds come from the plan so the
+        # documented keys (max_structure, min_metrics, ...) actually reach
+        # the gate that reads them.
+        #
+        # `trigger_f1` and `regression_pass` are forwarded only when the
+        # evaluator measured them, and deliberately not defaulted to 1.0.
+        # They used to be hard-coded to 1.0 here while CreatorEvaluator was
+        # computing the real figure two modules away, so `trigger_tolerance`
+        # compared 1.0 against 1.0 forever — and worse, the gate's own
+        # `has_trigger` check saw a value present and therefore never warned
+        # that the trigger gate was inactive. A missing measurement now
+        # looks missing, which is the only state the gate can report
+        # honestly.
         gate = phase_6_gate_decision(
             {"pass_rate": new_rate, "holdout_pass_rate": new_holdout,
-             "l1_pass": True, "trigger_f1": 1.0,
+             "l1_pass": True,
              "tokens_mean": new_eval.get("tokens", 0),
              "duration_mean": new_eval.get("duration", 0.0),
-             "regression_pass": 1.0},
+             "snapshot": new_eval.get("snapshot"),
+             "metrics": new_eval.get("metrics", {}),
+             **_measured(new_eval, "trigger_f1", "regression_pass")},
             {"pass_rate": best_rate, "holdout_pass_rate": best_holdout,
-             "trigger_f1": 1.0,
-             "tokens_mean": baseline.get("tokens", 0),
-             "duration_mean": baseline.get("duration", 0.0),
-             "regression_pass": 1.0},
-            {"min_delta": 0.01, "noise_threshold": 0.005}
+             "tokens_mean": best_tokens,
+             "duration_mean": best_duration,
+             "snapshot": best_snapshot,
+             "metrics": best_metrics,
+             **_measured(baseline, "trigger_f1", "regression_pass")},
+            {"min_delta": 0.01, "noise_threshold": 0.005, **gate_thresholds}
         )
         decision = gate["decision"]
         log(f"  Decision: {decision}")
         for r in gate.get("reasons", []):
             log(f"    · {r}")
 
+        # Phase 6.5: Adversarial review panel — only spent on candidates
+        # that already look like a keep. Three independent verifiers
+        # (overfit / assertion_gaming / structural) can still veto a
+        # numeric-gate pass; a "skipped" panel result (>=2 verifier
+        # calls failed) falls back to the numeric gate's own decision
+        # rather than blocking the iteration on a broken review step.
+        # The whole block is wrapped in try/except (defense-in-depth,
+        # per adversarial review): _call_llm now degrades subprocess-
+        # level failures to an "error" verdict internally, but this is
+        # still a newer, less battle-tested subsystem than the rest of
+        # the loop — an unexpected exception here should degrade the
+        # same way a "skipped" panel does, not crash an iteration that
+        # otherwise already has a valid numeric-gate decision.
+        adversarial_result = None
+        if decision == "keep":
+            log("Phase 6.5: Adversarial review")
+            try:
+                diff = _git_diff_for_commit(skill_path, commit["commit_hash"])
+                adversarial_result = phase_6_5_review(
+                    skill_path, diff,
+                    {"dev_pass_rate": new_rate, "holdout_pass_rate": new_holdout,
+                     "baseline_dev_pass_rate": best_rate,
+                     "baseline_holdout_pass_rate": best_holdout},
+                    model=model)
+            except Exception as exc:
+                adversarial_result = {
+                    "decision": "skipped", "verdicts": [],
+                    "reasoning": f"Phase 6.5 raised {type(exc).__name__}: {exc}",
+                }
+            log(f"  Panel: {adversarial_result['decision']} — {adversarial_result['reasoning']}")
+            if adversarial_result["decision"] == "reject":
+                decision = "discard"
+
         if decision == "keep":
             best_rate = new_rate
             if new_holdout is not None:
                 best_holdout = new_holdout
+            best_tokens = new_eval.get("tokens", 0)
+            best_duration = new_eval.get("duration", 0.0)
+            # Advance the structural and per-metric baselines with the rest.
+            # Leaving them frozen at Phase 0 would let a candidate grow 25%
+            # every iteration and never trip the cap, since each step is
+            # measured against the original rather than the incumbent.
+            if new_eval.get("snapshot"):
+                best_snapshot = new_eval["snapshot"]
+            if new_eval.get("metrics"):
+                best_metrics = new_eval["metrics"]
             save_best_version(skill_path, workspace, iteration)
             log(f"  KEEP — new best: dev {best_rate:.0%}"
                 + (f", holdout {best_holdout:.0%}" if best_holdout is not None else ""))
@@ -311,7 +510,7 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
             # is still in the working tree and subsequent iterations
             # would build on corrupt state. Abort the loop cleanly
             # instead of pretending the revert succeeded.
-            revert = git_revert_last(skill_path)
+            revert = git_revert_last(skill_path, commit["commit_hash"])
             if not revert.get("success"):
                 msg = (
                     f"Gate decision={decision} at iter {iteration}; "
@@ -346,6 +545,7 @@ def run_evolve_loop(skill_path: Path, gt_path: Path, workspace: Path,
                         "tokens": new_eval.get("tokens", 0),
                         "duration": new_eval.get("duration", 0.0),
                         "diagnosis": result_23.get("diagnosis", ""),
+                        "adversarial_review": adversarial_result,
                     },
                     eval_result=new_eval,
                     split="dev")
@@ -411,7 +611,14 @@ def main():
     parser.add_argument("--workspace", type=Path, default=None)
     parser.add_argument("--model", default=None, help="Model for LLM CLI")
     parser.add_argument("--evaluator", default=None,
-                        choices=["local", "creator", "script", "pytest"],
+                        # Read from the registry rather than repeated here.
+                        # The hard-coded list had gone stale: `grader` and
+                        # `behavioral` were both supported by
+                        # `get_evaluator`, and SKILL.md documents
+                        # `evaluator: grader`, but argparse rejected the flag
+                        # outright with exit 2 — a supported backend
+                        # unreachable from the CLI that documents it.
+                        choices=list(EVALUATOR_NAMES),
                         help="Evaluator engine (default: auto-detect from evolve_plan.md)")
     parser.add_argument("--evaluator-script", default=None,
                         help="Path to eval script (for --evaluator script)")
@@ -508,13 +715,14 @@ def main():
     if eval_config.get("evaluator"):
         evaluator_instance = get_evaluator(eval_config)
 
-    # Verify creator is available before doing any real work
-    try:
-        creator = require_creator()
+    # Creator is optional — report availability, never gate on it.
+    creator = find_creator_path()
+    if creator:
         print(f"skill-creator found: {creator}", file=sys.stderr)
-    except CreatorNotFoundError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
-        sys.exit(2)
+    else:
+        print("skill-creator not installed — running standalone "
+              "(built-in validation; no trigger-F1 or HTML review).",
+              file=sys.stderr)
 
     if args.run or args.dry_run:
         # THE REAL LOOP (or dry-run preview)

@@ -33,7 +33,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from common import require_creator, parse_skill_md
+from common import find_creator_path, parse_skill_md
 from aggregate_results import parse_results_tsv
 from llm import _call_llm
 
@@ -108,11 +108,25 @@ def cleanup_eval_outputs(workspace: Path, keep_recent: int = 5) -> list[str]:
 # ─────────────────────────────────────────────
 
 def _find_project_root(skill_path: Path) -> str:
-    """Walk up from skill_path to find the git root (or fall back to parent)."""
-    for parent in [skill_path] + list(skill_path.parents):
-        if (parent / ".git").exists():
-            return str(parent)
-    return str(skill_path.parent)
+    """The directory a skill should be run from — the repository root.
+
+    Delegates to ``Target.vcs_root`` rather than walking up here. This
+    function used to do its own walk, identical except for the fallback:
+    with nothing under version control it returned ``skill_path.parent``
+    where ``vcs_root`` returns the artifact's own directory. One level
+    apart, and the result becomes ``cwd`` for the model call below — which
+    decides whether Claude Code discovers the skill at all. Two answers to
+    "where is the root" is one too many when they disagree.
+    """
+    from target import resolve_target
+
+    try:
+        return str(resolve_target(skill_path).vcs_root)
+    except (FileNotFoundError, ValueError, OSError):
+        # A path that cannot be resolved as an artifact still has a
+        # directory, and running there is better than not running.
+        return str(skill_path if skill_path.is_dir() else skill_path.parent)
+
 
 
 def _run_skill_for_viewer(prompt: str, skill_path: Path,
@@ -257,9 +271,15 @@ def _try_launch_eval_viewer(workspace: Path, skill_path: Path,
     the viewer so it finds the ``outputs/`` directories with real skill
     responses.
 
-    Returns True if viewer was launched successfully.
+    Returns True if viewer was launched successfully. The viewer is a
+    Creator-provided convenience, so a missing Creator is a no-op
+    (returns False) rather than an error — the run's real artifacts
+    (results.tsv, experiments.jsonl, per-case JSON) are all written by
+    Evolver itself and are unaffected.
     """
-    creator_path = require_creator()
+    creator_path = find_creator_path()
+    if creator_path is None:
+        return False
 
     viewer_script = creator_path / "eval-viewer" / "generate_review.py"
     if not viewer_script.exists():

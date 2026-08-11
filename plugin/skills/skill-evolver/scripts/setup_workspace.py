@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
-"""Set up evolve workspace for a target skill.
+"""Set up an evolve workspace for a target.
 
-Usage: python setup_workspace.py <target-skill-path> [--workspace <path>]
+Usage: python setup_workspace.py <target-path> [--section<heading>]
+                [--workspace <path>]
 
-Creates the evolve/ subdirectory within <skill-name>-workspace/, initializes
-results.tsv, and generates an evolve_plan.md template.
+The target may be a skill directory, a standalone prompt file, or one
+section of a file (with``--section``). Which of those it is is decided by
+``target.resolve_target``, not here — see that module for why the decision
+lives in exactly one place.
+
+Creates the evolve/ subdirectory within<target-name>-workspace/,
+initializes results.tsv, and generates an evolve_plan.md template.
 """
 
 import argparse
@@ -15,16 +21,21 @@ from pathlib import Path
 
 # Allow importing siblings
 sys.path.insert(0, str(Path(__file__).parent))
-from common import find_workspace, parse_skill_md
+from target import Target, resolve_target
 
 
-def setup_workspace(skill_path: Path, workspace: Path | None = None) -> dict:
-    """Create workspace evolve/ structure for a target skill.
+def setup_workspace(target: Target, workspace: Path | None = None) -> dict:
+    """Create the workspace evolve/ structure for a target.
+
+    Takes a :class:`Target`, never a path. Accepting both would mean
+    inspecting the argument's type here, and the one place allowed to
+    decide what shape an artifact has is ``resolve_target`` — callers
+    holding a path resolve it there, which keeps that decision in a single
+    location instead of one copy per entry point.
 
     Returns dict with created paths.
     """
-    skill_path = skill_path.resolve()
-    ws = (workspace or find_workspace(skill_path)).resolve()
+    ws = (workspace or target.workspace).resolve()
     evolve_dir = ws / "evolve"
 
     # Create directories. evals/checks/ is the canonical home for
@@ -65,11 +76,8 @@ def setup_workspace(skill_path: Path, workspace: Path | None = None) -> dict:
     # Generate evolve_plan.md template if not exists
     plan_path = evolve_dir / "evolve_plan.md"
     if not plan_path.exists():
-        try:
-            name, description, _ = parse_skill_md(skill_path)
-        except (ValueError, FileNotFoundError):
-            name = skill_path.name
-            description = "(could not parse SKILL.md)"
+        name = target.name
+        description = target.summary()
 
         # Count GT cases if evals exist
         gt_info = "No GT data found yet."
@@ -85,8 +93,9 @@ def setup_workspace(skill_path: Path, workspace: Path | None = None) -> dict:
         plan_content = f"""# Evolve Plan for: {name}
 
 > Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}
-> Skill: {name}
-> Description: {description[:100]}...
+> Target: {name} ({type(target).__name__})
+> Path: {target.artifact_path}
+> Summary: {description[:100]}...
 
 ## Evaluation Philosophy
 
@@ -97,11 +106,14 @@ Assertion types:
 - Program-only: contains, not_contains, regex, file_exists, json_schema, script_check
 - LLM binary (YES/NO): path_hit, fact_coverage
 
-## Skill Analysis
-- Type: TODO — analyze SKILL.md to determine
+## Target Analysis
+- Type: TODO — analyze the target to determine
 - Complexity: TODO
 - GT data: {gt_info}
 - Key assertion types: TODO
+
+## Structural Baseline
+{json.dumps(target.snapshot(), indent=2, ensure_ascii=False)}
 
 ## Evaluation Strategy
 
@@ -141,7 +153,7 @@ model:
   phase_8_loop_control keeps running with a different ideation path)
 
 ---
-*This is a template. Claude should analyze the skill and GT data to fill in TODOs before starting evolve.*
+*This is a template. Claude should analyze the target and GT data to fill in TODOs before starting evolve.*
 """
         plan_path.write_text(plan_content)
         created.append(str(plan_path))
@@ -150,22 +162,52 @@ model:
         "workspace": str(ws),
         "evolve_dir": str(evolve_dir),
         "created": created,
-        "skill_name": skill_path.name,
+        "target_name": target.name,
+        "target_type": type(target).__name__,
+        "target_path": str(target.artifact_path),
+        # Retained under its original key so existing callers and log
+        # parsers keep working; targets that are not skills report the
+        # same value as `target_name`.
+        "skill_name": target.name,
     }
 
 
 def main():
     parser = argparse.ArgumentParser(description="Set up evolve workspace")
-    parser.add_argument("skill_path", type=Path, help="Path to target skill directory")
-    parser.add_argument("--workspace", type=Path, default=None, help="Override workspace path")
+    parser.add_argument(
+        "target_path", type=Path,
+        help="Skill directory, or a prompt file",
+    )
+    parser.add_argument(
+        "--section", default=None,
+        help="Optimize only this heading's body within the file",
+    )
+    parser.add_argument("--workspace", type=Path, default=None,
+                        help="Override workspace path")
     args = parser.parse_args()
 
-    if not args.skill_path.is_dir():
-        print(f"Error: Skill directory not found: {args.skill_path}", file=sys.stderr)
+    # Errors from resolve_target already say what is wrong and what the
+    # valid alternative is, so they are reported verbatim rather than
+    # replaced with a generic message that would lose that detail.
+    # UnicodeDecodeError is included because a non-UTF-8 target is a
+    # usage error, not a bug, and a traceback tells the user nothing they
+    # can act on. OSError covers the unreadable-file case for the same
+    # reason.
+    try:
+        target = resolve_target(args.target_path, args.section)
+        result = setup_workspace(target, args.workspace)
+    except UnicodeDecodeError as exc:
+        print(
+            f"Error: {args.target_path} is not valid UTF-8 text "
+            f"({exc.reason}). Optimization targets must be text files.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    except (FileNotFoundError, ValueError, OSError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    result = setup_workspace(args.skill_path, args.workspace)
-    print(json.dumps(result, indent=2))
+    print(json.dumps(result, indent=2, ensure_ascii=False))
 
 
 if __name__ == "__main__":

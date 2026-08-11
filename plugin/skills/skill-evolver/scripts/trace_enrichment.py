@@ -154,6 +154,8 @@ def build_skill_snapshot(skill_path: Path) -> dict:
     reconstruct it. Matches paper §2's "state updates" in the
     skill evaluation regime (which is otherwise mostly stateless).
     """
+    from common import iter_skill_prose  # local import to avoid cycles
+
     skill_md = skill_path / "SKILL.md"
     size_bytes = skill_md.stat().st_size if skill_md.exists() else 0
     md_lines = 0
@@ -176,13 +178,19 @@ def build_skill_snapshot(skill_path: Path) -> dict:
                 description_chars = len(desc_match.group(1).strip())
 
     def _rel_md_list(subdir: str) -> list[str]:
-        dir_path = skill_path / subdir
-        if not dir_path.is_dir():
-            return []
-        return sorted(
-            str(p.relative_to(skill_path))
-            for p in dir_path.rglob("*.md")
-        )
+        """Prose files under``subdir``, as skill-relative paths.
+
+        Filters the single skill-layout enumeration rather than walking
+        the tree again: three separate copies of "which directories is a
+        skill made of" had already drifted apart, so the listing now has
+        one owner in ``common``.
+        """
+        prefix = f"{subdir}/"
+        return [
+            str(rel)
+            for rel, _ in iter_skill_prose(skill_path)
+            if str(rel).startswith(prefix)
+        ]
 
     return {
         "path": str(skill_path),
@@ -367,29 +375,51 @@ def check_json_schema_rich(schema_str: str, content: str) -> dict:
       parse_error    → content JSON didn't parse
       schema_mismatch→ parsed fine but failed one schema constraint
                        (``schema_mismatch_path`` tells you which field)
+
+    Extraction goes through :func:`json_extract.extract_json_object`, the
+    one definition of "find the JSON in this model reply". This function
+    used to carry its own — a ```` ```json ```` fence match falling back to
+    parsing the whole content — and the two disagreed on five of eight
+    realistic shapes:
+
+        ```` ``` ```` with no language tag   theirs: None    shared: parsed
+        an object embedded in prose          theirs: None    shared: parsed
+        an object followed by prose          theirs: None    shared: parsed
+        two objects (takes the last)         theirs: None    shared: parsed
+
+    So the same model output passed when graded through the assertions path
+    and failed when graded through this one, with nothing to indicate that
+    the difference was in the harness rather than in the answer.
+
+    The one case the local version handled and the shared extractor does
+    not is a bare array or scalar payload — ``extract_json_object`` looks
+    for an *object* by design. That is preserved explicitly below rather
+    than by keeping a second extractor, so the fallback is visible as the
+    narrow exception it is.
     """
     try:
         schema = json.loads(schema_str)
     except json.JSONDecodeError as e:
         return {"pass": False, "schema_error": str(e)}
 
-    # Extract JSON from content (try ```json blocks first, then raw).
-    json_match = re.search(r'```json\s*\n(.*?)\n```', content, re.DOTALL)
-    if json_match:
-        data_str = json_match.group(1)
-        extracted_from = "fenced_code_block"
-    else:
-        data_str = content
-        extracted_from = "raw_content"
+    from json_extract import extract_json_object
 
-    try:
-        data = json.loads(data_str)
-    except json.JSONDecodeError as e:
-        return {
-            "pass": False,
-            "parse_error": str(e),
-            "extracted_from": extracted_from,
-        }
+    data = extract_json_object(content)
+    if data is not None:
+        extracted_from = "json_object"
+    else:
+        # A schema may legitimately describe an array or a scalar, which
+        # the object extractor will not return. Parsing the content whole
+        # is the remaining option; anything else is a parse error.
+        extracted_from = "raw_content"
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError as e:
+            return {
+                "pass": False,
+                "parse_error": str(e),
+                "extracted_from": extracted_from,
+            }
 
     ok, failure_path = basic_schema_check_with_path(data, schema, "")
     if ok:
